@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.env
+venv/
+.venv/
+ENV/
+env/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-lock.yaml
+package-lock.json
+
+# VSCode
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Data and outputs
+uploads/
+video_processing_outputs/
+logs/
+*.sqlite3
+
+# Models and large binaries
+models/
+*.pt
+*.pth
+*.onnx
+
+# Secrets
+client_secret_*.json
+*.key
+*.pem
+*.crt
+
+# Frontend build
+.next/
+out/
+
+# Misc
+coverage/
+coverage.xml
+*.log
+
+# Allowlist README if needed
+# Add other files you explicitly want to include by editing this file

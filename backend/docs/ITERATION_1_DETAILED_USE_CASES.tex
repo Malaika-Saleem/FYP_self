@@ -1,0 +1,776 @@
+\documentclass{article}
+\usepackage[utf8]{inputenc}
+\usepackage{geometry}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{float}
+\usepackage{tabularx}
+\usepackage{booktabs}
+\usepackage{enumitem}
+
+\geometry{margin=1in}
+\title{DetectifAI - Iteration 1: Detailed Use Cases}
+\author{Aiza Ali (22i-0612), Malaika Saleem (22i-0509), Moimma Ali Khan (22i-1500)}
+\date{October 2025}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+
+This document presents comprehensive use cases for DetectifAI's first iteration, focusing on the implemented video processing pipeline, object detection system, web dashboard, and API infrastructure. Each use case is detailed with preconditions, main flows, alternative flows, and postconditions based on the actual system implementation.
+
+\section{Primary Use Cases - Core Functionality}
+
+\subsection{Video Upload and Processing Use Cases}
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{|l|X|}
+\hline
+\multicolumn{2}{|c|}{\textbf{UC01: Upload Video for Analysis}} \\ \hline
+\textbf{Use Case} & Upload Video File for Fire Detection Analysis \\ \hline
+\textbf{Actors} & Security Officer, Investigation Team, System Administrator \\ \hline
+\textbf{Type} & Primary \\ \hline
+\textbf{Preconditions} & 
+- User has access to DetectifAI web dashboard
+- Video file is in supported format (.avi, .mp4, .mov)
+- File size is within system limits
+- Backend Flask server is running \\ \hline
+\textbf{Main Flow} & 
+1. User accesses the main dashboard at localhost:3001/dashboard
+2. User clicks "Upload Videos" button in the Video Footage widget
+3. System opens upload modal with drag-and-drop interface
+4. User selects video file or drags file into upload area
+5. System validates file format and size
+6. User clicks "Upload Video for Fire Detection Analysis"
+7. System generates unique video ID (format: video\_YYYYMMDD\_HHMMSS\_hash)
+8. System uploads file to backend/uploads/ directory
+9. System initiates processing pipeline asynchronously
+10. System displays processing status with progress indicator
+11. System polls /api/status/\{videoId\} every 2 seconds for updates \\ \hline
+\textbf{Alternative Flows} & 
+A1: Invalid file format
+- System displays error message
+- User selects different file
+A2: File too large
+- System shows size limit warning
+- User compresses or selects smaller file
+A3: Upload fails
+- System shows retry option
+- System logs error for debugging \\ \hline
+\textbf{Postconditions} & 
+- Video file stored in uploads/ directory
+- Unique video ID generated and tracked
+- Processing status initialized
+- User can monitor progress in real-time \\ \hline
+\textbf{Business Rules} & 
+- Maximum file size: 100MB (configurable)
+- Supported formats: .avi, .mp4, .mov, .mkv
+- Processing timeout: 5 minutes for standard videos \\ \hline
+\end{tabularx}
+\caption{Use Case 01: Upload Video for Analysis}
+\end{table}
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{|l|X|}
+\hline
+\multicolumn{2}{|c|}{\textbf{UC02: Extract and Enhance Keyframes}} \\ \hline
+\textbf{Use Case} & Video Preprocessing and Keyframe Extraction \\ \hline
+\textbf{Actors} & System (OptimizedVideoProcessor) \\ \hline
+\textbf{Type} & System \\ \hline
+\textbf{Preconditions} & 
+- Video file uploaded and stored in uploads/
+- OptimizedVideoProcessor initialized
+- Sufficient disk space for frame extraction \\ \hline
+\textbf{Main Flow} & 
+1. System loads video file using OpenCV
+2. System analyzes video properties (duration, FPS, resolution)
+3. System calculates temporal sampling rate (\~{}1 frame per second)
+4. System extracts keyframes based on temporal sampling
+5. System evaluates each frame for quality metrics
+6. System applies CLAHE enhancement to low-quality frames
+7. System saves keyframes to video\_processing\_outputs/\{videoId\}/frames/
+8. System generates frame metadata with timestamps
+9. System updates processing status to "Keyframes extracted" \\ \hline
+\textbf{Alternative Flows} & 
+A1: Video corruption detected
+- System attempts error recovery
+- System skips corrupted frames
+- System continues with available frames
+A2: Insufficient disk space
+- System cleans temporary files
+- System reduces keyframe quality if needed
+A3: Unsupported codec
+- System attempts format conversion
+- System logs codec information for support \\ \hline
+\textbf{Postconditions} & 
+- Keyframes saved to organized directory structure
+- Frame metadata generated with timestamps
+- Processing pipeline ready for object detection
+- Performance metrics logged (processing time, frame count) \\ \hline
+\textbf{Performance Requirements} & 
+- Process 16-second video in under 6 seconds
+- Extract 15-20 keyframes from typical surveillance footage
+- Maintain frame quality for accurate detection \\ \hline
+\end{tabularx}
+\caption{Use Case 02: Extract and Enhance Keyframes}
+\end{table}
+
+\subsection{Object Detection Use Cases}
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{|l|X|}
+\hline
+\multicolumn{2}{|c|}{\textbf{UC03: Detect Fire and Weapons in Video}} \\ \hline
+\textbf{Use Case} & YOLO-based Object Detection Analysis \\ \hline
+\textbf{Actors} & System (ObjectDetectionIntegrator), YOLO Models \\ \hline
+\textbf{Type} & Primary \\ \hline
+\textbf{Preconditions} & 
+- Keyframes extracted and available
+- YOLO models loaded (fire\_yolo11.pt, yolov11\_knife\_gun.pt)
+- Sufficient CPU/GPU resources for inference
+- ObjectDetectionIntegrator initialized \\ \hline
+\textbf{Main Flow} & 
+1. System loads fire detection model (models/fire\_yolo11.pt)
+2. System loads weapon detection model (models/yolov11\_knife\_gun.pt)
+3. System iterates through extracted keyframes
+4. System runs inference on each frame with both models
+5. System filters detections by confidence threshold (>0.5)
+6. System extracts bounding box coordinates and class labels
+7. System creates annotated versions of frames with detections
+8. System calculates detection statistics (confidence avg, object count)
+9. System saves annotated frames with "\_annotated.jpg" suffix
+10. System generates detection\_metadata.json with results
+11. System updates progress indicators during processing \\ \hline
+\textbf{Alternative Flows} & 
+A1: No objects detected
+- System processes all frames
+- System creates empty detection metadata
+- System continues to next pipeline stage
+A2: Model loading fails
+- System logs error details
+- System attempts model reload
+- System falls back to basic processing if available
+A3: Low confidence detections
+- System applies confidence boosting techniques
+- System logs detection attempts for model improvement \\ \hline
+\textbf{Postconditions} & 
+- Detection metadata saved as JSON
+- Annotated frames created for frames with detections
+- Object detection statistics calculated
+- Detection summary available for event aggregation \\ \hline
+\textbf{Quality Attributes} & 
+- Detection accuracy: >85\% for fire events
+- Processing speed: 0.2-0.4 seconds per frame
+- False positive rate: <10\% for weapon detection
+- Confidence threshold: Configurable (default 0.5) \\ \hline
+\end{tabularx}
+\caption{Use Case 03: Detect Fire and Weapons in Video}
+\end{table}
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{|l|X|}
+\hline
+\multicolumn{2}{|c|}{\textbf{UC04: Create Detection Events}} \\ \hline
+\textbf{Use Case} & Generate Events from Object Detections \\ \hline
+\textbf{Actors} & System (ObjectDetectionIntegrator) \\ \hline
+\textbf{Type} & System \\ \hline
+\textbf{Preconditions} & 
+- Object detection completed
+- Detection metadata available
+- Event aggregation system initialized \\ \hline
+\textbf{Main Flow} & 
+1. System analyzes detection results by timestamp
+2. System groups consecutive detections of same object class
+3. System determines event start and end timestamps
+4. System calculates average confidence for event duration
+5. System creates object-based event structure
+6. System assigns unique event ID (format: \{class\}\_detection\_\{timestamp\})
+7. System includes keyframe references and detection details
+8. System sets event priority based on object type and confidence
+9. System adds event to aggregation pipeline \\ \hline
+\textbf{Alternative Flows} & 
+A1: Single frame detection
+- System creates short-duration event (2-3 second window)
+- System maintains minimum event duration for visibility
+A2: Multiple object types in timeframe
+- System creates separate events for each object type
+- System maintains temporal relationships between events
+A3: Low confidence event
+- System flags event for manual review
+- System includes uncertainty indicators in metadata \\ \hline
+\textbf{Postconditions} & 
+- Object-based events created and stored
+- Event timeline established
+- Events ready for DetectifAI security processing
+- Event metadata includes confidence and object details \\ \hline
+\textbf{Event Types Generated} & 
+- fire\_detection: Fire or smoke identified
+- weapon\_detection: Knife or gun identified  
+- person\_detection: Human subjects in scene
+- multi\_object\_event: Multiple objects detected simultaneously \\ \hline
+\end{tabularx}
+\caption{Use Case 04: Create Detection Events}
+\end{table}
+
+\subsection{Event Processing and Security Integration}
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{|l|X|}
+\hline
+\multicolumn{2}{|c|}{\textbf{UC05: Process DetectifAI Security Events}} \\ \hline
+\textbf{Use Case} & Convert Detection Events to Security Framework \\ \hline
+\textbf{Actors} & System (DetectifAIEventProcessor) \\ \hline
+\textbf{Type} & System \\ \hline
+\textbf{Preconditions} & 
+- Object-based events created
+- DetectifAI event processor initialized
+- Security event framework loaded \\ \hline
+\textbf{Main Flow} & 
+1. System receives object-based events from detection pipeline
+2. System maps object detection events to security event types
+3. System determines threat level based on object type and confidence
+4. System creates DetectifAI security event structure
+5. System assigns investigation priority (1-10 scale)
+6. System sets immediate response flags for high-priority events
+7. System adds security-specific metadata and descriptions
+8. System integrates with canonical event system
+9. System prepares events for dashboard display \\ \hline
+\textbf{Alternative Flows} & 
+A1: High-threat event detected
+- System flags for immediate response
+- System escalates priority level
+- System triggers additional notification systems
+A2: Multiple concurrent events
+- System correlates related events
+- System creates composite security assessment
+A3: Event processing error
+- System logs error for debugging
+- System continues with degraded functionality \\ \hline
+\textbf{Postconditions} & 
+- Security events created in DetectifAI framework
+- Threat levels assigned and documented
+- Events ready for dashboard visualization
+- Security metadata preserved for reporting \\ \hline
+\textbf{Security Classifications} & 
+- HIGH: Weapon detection, fire events
+- MEDIUM: Person detection in restricted areas
+- LOW: General object detection events
+- CRITICAL: Multiple high-threat events simultaneously \\ \hline
+\end{tabularx}
+\caption{Use Case 05: Process DetectifAI Security Events}
+\end{table}
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{|l|X|}
+\hline
+\multicolumn{2}{|c|}{\textbf{UC06: Aggregate and Deduplicate Events}} \\ \hline
+\textbf{Use Case} & Event Deduplication and Timeline Creation \\ \hline
+\textbf{Actors} & System (EventDeduplicationEngine) \\ \hline
+\textbf{Type} & System \\ \hline
+\textbf{Preconditions} & 
+- Multiple events generated from various sources
+- Event deduplication engine initialized
+- Similarity thresholds configured \\ \hline
+\textbf{Main Flow} & 
+1. System collects events from object detection and other sources
+2. System analyzes temporal proximity of events (within 3-second window)
+3. System compares event types, locations, and confidence levels
+4. System identifies duplicate or highly similar events
+5. System merges related events into canonical representations
+6. System preserves highest confidence and most complete metadata
+7. System creates deduplicated event timeline
+8. System maintains references to source events for audit trail
+9. System generates final event summary for display \\ \hline
+\textbf{Alternative Flows} & 
+A1: No duplicate events found
+- System passes all events through unchanged
+- System maintains original event structure
+A2: Complex event overlap
+- System applies weighted merging algorithms
+- System preserves distinct characteristics of each event
+A3: Temporal boundary conflicts
+- System applies configurable time windows
+- System allows manual override for edge cases \\ \hline
+\textbf{Postconditions} & 
+- Canonical events created with reduced redundancy
+- Event timeline optimized for user comprehension
+- Source event relationships preserved
+- Final event count reduced by deduplication \\ \hline
+\textbf{Deduplication Metrics} & 
+- Temporal threshold: 3 seconds for similar events
+- Spatial threshold: Overlapping bounding boxes >70\%
+- Confidence weighting: Higher confidence events preferred
+- Typical reduction: 20-40\% fewer events after deduplication \\ \hline
+\end{tabularx}
+\caption{Use Case 06: Aggregate and Deduplicate Events}
+\end{table}
+
+\subsection{Video Processing and Compression}
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{|l|X|}
+\hline
+\multicolumn{2}{|c|}{\textbf{UC07: Compress Processed Video}} \\ \hline
+\textbf{Use Case} & Video Compression for Web Delivery \\ \hline
+\textbf{Actors} & System (VideoCompressor) \\ \hline
+\textbf{Type} & System \\ \hline
+\textbf{Preconditions} & 
+- Original video file available
+- Compression target directory created
+- OpenCV or FFmpeg available for compression \\ \hline
+\textbf{Main Flow} & 
+1. System attempts FFmpeg compression (preferred method)
+2. System falls back to OpenCV compression if FFmpeg unavailable
+3. System configures compression parameters (resolution, bitrate, FPS)
+4. System compresses video with progress tracking
+5. System reduces resolution from 1920x1080 to 1280x720
+6. System maintains 30 FPS for smooth playback
+7. System saves compressed video to compressed/ subdirectory
+8. System calculates compression statistics (size reduction, ratio)
+9. System updates processing status with compression results \\ \hline
+\textbf{Alternative Flows} & 
+A1: FFmpeg not available
+- System uses OpenCV VideoWriter as fallback
+- System applies similar compression parameters
+- System logs fallback usage for system optimization
+A2: Compression fails
+- System retries with different parameters
+- System provides original video if compression impossible
+A3: Insufficient disk space
+- System applies more aggressive compression
+- System notifies administrators of space constraints \\ \hline
+\textbf{Postconditions} & 
+- Compressed video available for web streaming
+- Original video preserved for high-quality analysis
+- Compression statistics logged and available
+- Video ready for dashboard playback \\ \hline
+\textbf{Compression Targets} & 
+- Size reduction: 80-90\% (typical: 33.78MB → 4.1MB)
+- Quality: Maintains detection visibility
+- Format: MP4 for web compatibility
+- Streaming: Optimized for progressive download \\ \hline
+\end{tabularx}
+\caption{Use Case 07: Compress Processed Video}
+\end{table}
+
+\section{User Interface Use Cases}
+
+\subsection{Dashboard and Navigation}
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{|l|X|}
+\hline
+\multicolumn{2}{|c|}{\textbf{UC08: Monitor Processing Status}} \\ \hline
+\textbf{Use Case} & Real-time Processing Status Monitoring \\ \hline
+\textbf{Actors} & Security Officer, Investigation Team \\ \hline
+\textbf{Type} & Primary \\ \hline
+\textbf{Preconditions} & 
+- Video uploaded and processing initiated
+- Dashboard active with status polling enabled
+- Backend API responding to status requests \\ \hline
+\textbf{Main Flow} & 
+1. User uploads video and receives processing confirmation
+2. System displays initial processing status (10\% - Upload Complete)
+3. System polls /api/status/\{videoId\} every 2 seconds
+4. System updates progress indicator based on API responses
+5. System displays current processing stage (Keyframes, Detection, etc.)
+6. System shows estimated completion time when available
+7. System provides real-time feedback on processing steps
+8. System automatically redirects to results upon completion
+9. System maintains status history for user reference \\ \hline
+\textbf{Alternative Flows} & 
+A1: Processing stuck or delayed
+- System displays "Check Results Manually" button
+- User can navigate directly to results page
+- System provides debugging information to administrators
+A2: API polling fails
+- System retries connection with exponential backoff
+- System displays connectivity status to user
+A3: Processing completes but status not updated
+- System uses disk-based recovery to detect completion
+- System reconstructs processing status from file system \\ \hline
+\textbf{Postconditions} & 
+- User informed of processing progress throughout pipeline
+- Automatic navigation to results when processing complete
+- Processing history maintained for audit and debugging
+- User experience remains responsive during long operations \\ \hline
+\textbf{Status Indicators} & 
+- 10\%: Upload complete, processing initiated
+- 30\%: Keyframe extraction in progress
+- 60\%: Object detection running
+- 90\%: Compression and finalization
+- 100\%: Processing complete, results available \\ \hline
+\end{tabularx}
+\caption{Use Case 08: Monitor Processing Status}
+\end{table}
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{|l|X|}
+\hline
+\multicolumn{2}{|c|}{\textbf{UC09: View Analysis Results}} \\ \hline
+\textbf{Use Case} & Display Comprehensive Video Analysis Results \\ \hline
+\textbf{Actors} & Security Officer, Investigation Team, System Administrator \\ \hline
+\textbf{Type} & Primary \\ \hline
+\textbf{Preconditions} & 
+- Video processing completed successfully
+- Results data available in backend storage
+- User has navigated to results page (/results/\{videoId\}) \\ \hline
+\textbf{Main Flow} & 
+1. User accesses results page via automatic redirect or manual navigation
+2. System loads comprehensive processing summary
+3. System displays compressed video player with playback controls
+4. System shows processing statistics (keyframes, detections, duration)
+5. System presents keyframe gallery with detection filtering options
+6. System highlights frames containing detected objects
+7. System provides object detection details (type, confidence, timestamp)
+8. System displays event timeline and security classifications
+9. System offers download options for reports and data
+10. System maintains responsive layout for different screen sizes \\ \hline
+\textbf{Alternative Flows} & 
+A1: No detections found
+- System displays "No suspicious activity detected" message
+- System still shows all keyframes and processing summary
+- System provides options for manual review
+A2: Partial processing failure
+- System displays available results with warnings
+- System indicates which components failed
+- System provides options for reprocessing
+A3: Large number of detections
+- System implements pagination for keyframe gallery
+- System provides filtering and sorting options
+- System summarizes detection statistics \\ \hline
+\textbf{Postconditions} & 
+- User has comprehensive view of video analysis results
+- All relevant data accessible through intuitive interface
+- Options available for further investigation or reporting
+- Results can be shared or exported for documentation \\ \hline
+\textbf{Display Components} & 
+- Video player: Compressed video with standard controls
+- Processing summary: Statistics dashboard with key metrics
+- Keyframe gallery: Filterable grid of extracted frames
+- Detection details: Object types, confidence scores, timestamps
+- Download options: Reports, metadata, original video access \\ \hline
+\end{tabularx}
+\caption{Use Case 09: View Analysis Results}
+\end{table}
+
+\subsection{Keyframe and Detection Management}
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{|l|X|}
+\hline
+\multicolumn{2}{|c|}{\textbf{UC10: Filter and Browse Keyframes}} \\ \hline
+\textbf{Use Case} & Interactive Keyframe Gallery Management \\ \hline
+\textbf{Actors} & Security Officer, Investigation Team \\ \hline
+\textbf{Type} & Primary \\ \hline
+\textbf{Preconditions} & 
+- Video analysis completed with keyframes extracted
+- Detection metadata available
+- Results page loaded and responsive \\ \hline
+\textbf{Main Flow} & 
+1. User accesses keyframe gallery section of results page
+2. System displays all extracted keyframes in grid layout
+3. User toggles between "All Keyframes" and "Detection Only" views
+4. System filters keyframes based on user selection
+5. System highlights frames containing object detections
+6. User clicks on individual keyframes to view detailed information
+7. System displays detection details (bounding boxes, confidence, objects)
+8. User can navigate between keyframes using keyboard or mouse controls
+9. System maintains smooth browsing experience with lazy loading
+10. User can zoom into keyframes for detailed inspection \\ \hline
+\textbf{Alternative Flows} & 
+A1: No detections found
+- System shows all keyframes without filtering options
+- System provides message explaining lack of detections
+- User can still browse all extracted frames
+A2: Large number of keyframes
+- System implements pagination or infinite scroll
+- System provides thumbnail size adjustment options
+- System offers keyboard shortcuts for navigation
+A3: Detection details unavailable
+- System shows keyframes without detection overlays
+- System provides metadata when available
+- System logs missing data for system improvement \\ \hline
+\textbf{Postconditions} & 
+- User can efficiently browse relevant video frames
+- Detection information clearly presented and accessible
+- Navigation between keyframes smooth and intuitive
+- Frame details available for investigation purposes \\ \hline
+\textbf{Filtering Options} & 
+- All Keyframes: Shows every extracted frame (typically 15-20)
+- Detection Only: Shows frames with object detections (typically 2-5)
+- By Object Type: Filter by fire, weapon, person detections
+- By Confidence: Filter by detection confidence levels
+- By Timestamp: Navigate frames chronologically \\ \hline
+\end{tabularx}
+\caption{Use Case 10: Filter and Browse Keyframes}
+\end{table}
+
+\section{System Administration Use Cases}
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{|l|X|}
+\hline
+\multicolumn{2}{|c|}{\textbf{UC11: Manage Processing Pipeline}} \\ \hline
+\textbf{Use Case} & System Administration and Pipeline Management \\ \hline
+\textbf{Actors} & System Administrator, Development Team \\ \hline
+\textbf{Type} & Secondary \\ \hline
+\textbf{Preconditions} & 
+- Administrative access to system
+- Backend services running and accessible
+- System monitoring tools available \\ \hline
+\textbf{Main Flow} & 
+1. Administrator accesses system logs and monitoring dashboard
+2. System displays current processing queue and active jobs
+3. Administrator reviews processing statistics and performance metrics
+4. System provides options to restart failed processing jobs
+5. Administrator can adjust system parameters and thresholds
+6. System allows model reloading without full restart
+7. Administrator monitors disk space and resource utilization
+8. System provides diagnostic tools for troubleshooting
+9. Administrator can export system logs for analysis \\ \hline
+\textbf{Alternative Flows} & 
+A1: System overload detected
+- Administrator can throttle processing queue
+- System provides resource usage warnings
+- Administrator can prioritize critical processing jobs
+A2: Processing failures detected
+- System provides detailed error logs and stack traces
+- Administrator can reset pipeline components
+- System offers automatic recovery options
+A3: Model performance issues
+- Administrator can reload or replace YOLO models
+- System provides model performance statistics
+- Administrator can adjust confidence thresholds \\ \hline
+\textbf{Postconditions} & 
+- System performance optimized for current load
+- Issues resolved or escalated appropriately
+- System configuration updated for improved operation
+- Monitoring and alerting systems configured \\ \hline
+\textbf{Administrative Functions} & 
+- Pipeline monitoring: Queue status, processing times
+- Resource management: Disk space, CPU/memory usage
+- Model management: Loading, updating, performance monitoring
+- Error handling: Log analysis, failure recovery, debugging tools \\ \hline
+\end{tabularx}
+\caption{Use Case 11: Manage Processing Pipeline}
+\end{table}
+
+\section{Error Handling and Recovery Use Cases}
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{|l|X|}
+\hline
+\multicolumn{2}{|c|}{\textbf{UC12: Handle Processing Failures}} \\ \hline
+\textbf{Use Case} & System Error Recovery and Graceful Degradation \\ \hline
+\textbf{Actors} & System, Administrator \\ \hline
+\textbf{Type} & Exception \\ \hline
+\textbf{Preconditions} & 
+- Processing pipeline initiated
+- Error or failure detected in pipeline component
+- Error handling systems active \\ \hline
+\textbf{Main Flow} & 
+1. System detects failure in pipeline component
+2. System logs detailed error information with context
+3. System attempts automatic recovery using fallback methods
+4. System isolates failed component to prevent cascade failures
+5. System continues processing with remaining functional components
+6. System marks processing as "completed with warnings"
+7. System provides user notification about partial processing
+8. System generates diagnostic report for administrator review
+9. System maintains data integrity despite component failures \\ \hline
+\textbf{Alternative Flows} & 
+A1: Critical component failure
+- System halts processing to prevent data corruption
+- System provides clear error message to user
+- System saves partial results for later recovery
+A2: Recoverable error detected
+- System retries operation with modified parameters
+- System applies alternative processing methods
+- System continues normal operation after recovery
+A3: Cascading failures detected
+- System performs controlled shutdown of processing pipeline
+- System preserves all available partial results
+- System provides comprehensive failure report \\ \hline
+\textbf{Postconditions} & 
+- User informed of processing status and any limitations
+- Available results preserved and accessible
+- System remains stable and ready for new processing
+- Error information logged for system improvement \\ \hline
+\textbf{Recovery Mechanisms} & 
+- FFmpeg failure → OpenCV fallback for video compression
+- Model loading failure → Processing continues without that detection type
+- Disk space issues → Cleanup of temporary files and warnings
+- Memory issues → Batch size reduction and garbage collection \\ \hline
+\end{tabularx}
+\caption{Use Case 12: Handle Processing Failures}
+\end{table}
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{|l|X|}
+\hline
+\multicolumn{2}{|c|}{\textbf{UC13: Recover Processing Status}} \\ \hline
+\textbf{Use Case} & Disk-based Status Recovery After System Restart \\ \hline
+\textbf{Actors} & System \\ \hline
+\textbf{Type} & System Recovery \\ \hline
+\textbf{Preconditions} & 
+- Previous processing completed but server restarted
+- Video files and outputs exist on disk
+- In-memory processing status lost \\ \hline
+\textbf{Main Flow} & 
+1. User attempts to access processing status or results
+2. System detects video ID not in memory but files exist on disk
+3. System scans video\_processing\_outputs/\{videoId\}/ directory
+4. System reconstructs processing status from file existence
+5. System detects completion based on compressed video and metadata
+6. System creates recovery status indicating "completed (recovered from disk)"
+7. System updates progress to 100\% and status to "completed"
+8. System provides normal results access despite initial memory loss
+9. System logs recovery operation for monitoring \\ \hline
+\textbf{Alternative Flows} & 
+A1: Partial processing detected
+- System identifies which pipeline stages completed
+- System provides appropriate status based on available files
+- System offers option to resume processing from last stage
+A2: Corrupted output files
+- System validates file integrity
+- System marks problematic files and suggests reprocessing
+A3: Missing critical files
+- System reports incomplete processing
+- System provides options for complete reprocessing \\ \hline
+\textbf{Postconditions} & 
+- Processing status accurately reflects actual completion state
+- User can access results despite system restart
+- Status recovery transparent to user experience
+- System resilience demonstrated for production deployment \\ \hline
+\textbf{Recovery Indicators} & 
+- Compressed video exists: Processing completed successfully
+- Detection metadata exists: Object detection completed
+- Keyframes directory populated: Frame extraction completed
+- Status message: "Processing completed (recovered from disk)" \\ \hline
+\end{tabularx}
+\caption{Use Case 13: Recover Processing Status}
+\end{table}
+
+\section{API Integration Use Cases}
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{|l|X|}
+\hline
+\multicolumn{2}{|c|}{\textbf{UC14: Handle API Requests}} \\ \hline
+\textbf{Use Case} & RESTful API Request Processing \\ \hline
+\textbf{Actors} & Frontend Application, External Systems \\ \hline
+\textbf{Type} & System Integration \\ \hline
+\textbf{Preconditions} & 
+- Flask server running and accessible
+- API endpoints configured and registered
+- CORS settings configured for frontend integration \\ \hline
+\textbf{Main Flow} & 
+1. Client sends HTTP request to Flask API endpoint
+2. System validates request format and parameters
+3. System authenticates request (if authentication enabled)
+4. System routes request to appropriate handler function
+5. System processes request with appropriate business logic
+6. System formats response data as JSON
+7. System adds appropriate HTTP status codes and headers
+8. System returns response to client with CORS headers
+9. System logs request and response for monitoring \\ \hline
+\textbf{Alternative Flows} & 
+A1: Invalid request format
+- System returns 400 Bad Request with error details
+- System logs malformed request for debugging
+A2: Resource not found
+- System returns 404 Not Found with appropriate message
+- System suggests alternative endpoints if applicable
+A3: Server error during processing
+- System returns 500 Internal Server Error
+- System logs full error details for debugging
+- System maintains system stability despite errors \\ \hline
+\textbf{Postconditions} & 
+- Client receives appropriate response with correct status
+- Request/response logged for monitoring and debugging
+- System remains available for subsequent requests
+- Error conditions handled gracefully without system impact \\ \hline
+\textbf{API Endpoints} & 
+- POST /api/upload: Video file upload
+- GET /api/status/\{videoId\}: Processing status
+- GET /api/video/results/\{videoId\}: Results metadata
+- GET /api/video/keyframes/\{videoId\}: Keyframe gallery data
+- GET /api/video/compressed/\{videoId\}: Compressed video streaming \\ \hline
+\end{tabularx}
+\caption{Use Case 14: Handle API Requests}
+\end{table}
+
+\section{Performance and Quality Use Cases}
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{|l|X|}
+\hline
+\multicolumn{2}{|c|}{\textbf{UC15: Ensure Processing Performance}} \\ \hline
+\textbf{Use Case} & Performance Monitoring and Optimization \\ \hline
+\textbf{Actors} & System, Performance Monitor \\ \hline
+\textbf{Type} & Quality Assurance \\ \hline
+\textbf{Preconditions} & 
+- Video processing pipeline active
+- Performance monitoring enabled
+- Resource utilization tracking configured \\ \hline
+\textbf{Main Flow} & 
+1. System monitors processing time for each pipeline stage
+2. System tracks resource utilization (CPU, memory, disk I/O)
+3. System measures detection accuracy and confidence levels
+4. System calculates throughput metrics (frames per second, videos per hour)
+5. System identifies performance bottlenecks and optimization opportunities
+6. System adjusts processing parameters for optimal performance
+7. System provides performance reports and recommendations
+8. System maintains performance history for trend analysis \\ \hline
+\textbf{Alternative Flows} & 
+A1: Performance degradation detected
+- System adjusts quality settings to maintain throughput
+- System alerts administrators to resource constraints
+- System implements load balancing strategies
+A2: Resource exhaustion approaching
+- System throttles processing to prevent system overload
+- System prioritizes critical processing tasks
+- System performs cleanup of temporary files and caches
+A3: Detection accuracy declining
+- System adjusts confidence thresholds
+- System suggests model retraining or updating
+- System provides detection quality reports \\ \hline
+\textbf{Postconditions} & 
+- System performance maintained within acceptable parameters
+- Resource utilization optimized for current workload
+- Performance trends tracked for capacity planning
+- Quality metrics maintained for reliable detection \\ \hline
+\textbf{Performance Targets} & 
+- Video processing: <20 seconds for 16-second input video
+- Detection accuracy: >85\% for fire events, >75\% for weapons
+- Resource usage: <80\% CPU utilization during processing
+- Response time: <200ms for API requests, <2s for status checks \\ \hline
+\end{tabularx}
+\caption{Use Case 15: Ensure Processing Performance}
+\end{table}
+
+\section{Conclusion}
+
+These detailed use cases comprehensively document the functionality implemented in DetectifAI's first iteration. They provide specific workflows, error handling procedures, and quality requirements that reflect the actual system capabilities. The use cases serve as both documentation of current functionality and specifications for testing and validation procedures.
+
+Each use case includes realistic preconditions, detailed main flows, alternative scenarios, and measurable postconditions based on the implemented system architecture. The performance metrics and quality attributes are derived from actual system testing and operational parameters.
+
+\end{document}
