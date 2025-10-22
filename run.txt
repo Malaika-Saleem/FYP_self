@@ -1,0 +1,5 @@
+npm install or some for next js
+npm run dev
+npm install mongodb bcryptjs jsonwebtoken uuid axios
+
+npm install next-auth bcrypt mongodb

@@ -1,0 +1,35 @@
+# Dependencies and build files
+.venv/
+venv/
+
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+
+
+
+# Temporary files
+*.tmp
+temp/
+tmp/
+
+
+# Test files
+test_*.py
+*_test.py
+temp_*.jpg
+temp_*.mp4
+

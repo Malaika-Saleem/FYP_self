@@ -1,0 +1,183 @@
+{
+  "total_tests": 8,
+  "passed_tests": 7,
+  "failed_tests": 1,
+  "test_details": [
+    {
+      "name": "Configuration Validation",
+      "status": "PASSED",
+      "details": {
+        "object_detection_enabled": true,
+        "facial_recognition_enabled": true,
+        "models_dir_exists": true,
+        "output_dir_exists": true
+      }
+    },
+    {
+      "name": "Module Import Tests",
+      "status": "PASSED",
+      "details": {
+        "import_results": {
+          "config": "SUCCESS",
+          "main_pipeline": "SUCCESS",
+          "video_processing": "SUCCESS",
+          "event_aggregation": "SUCCESS",
+          "object_detection": "SUCCESS",
+          "detectifai_events": "SUCCESS",
+          "facial_recognition": "SUCCESS",
+          "fight_detection": "SUCCESS",
+          "wall_jump_detection": "SUCCESS",
+          "accident_detection": "SUCCESS"
+        },
+        "success_rate": 1.0,
+        "all_modules_imported": true
+      }
+    },
+    {
+      "name": "Object Detection Models",
+      "status": "PASSED",
+      "details": {
+        "object_detector_initialized": true,
+        "models_info": {
+          "fire": {
+            "file": "fire_yolo11.pt",
+            "path": "models\\fire_yolo11.pt",
+            "exists": true,
+            "size_mb": 5.225359916687012
+          },
+          "weapons": {
+            "file": "yolov11_knife_gun.pt",
+            "path": "models\\yolov11_knife_gun.pt",
+            "exists": true,
+            "size_mb": 18.106685638427734
+          }
+        },
+        "placeholder_test_results": {
+          "detection_results_count": 0,
+          "object_events_count": 0
+        }
+      }
+    },
+    {
+      "name": "DetectifAI Event System",
+      "status": "FAILED",
+      "details": {
+        "error": "Test returned False"
+      }
+    },
+    {
+      "name": "Facial Recognition Setup",
+      "status": "PASSED",
+      "details": {
+        "face_detector_initialized": true,
+        "placeholder_detection_working": true,
+        "detection_stats": {
+          "frames_processed": 1,
+          "faces_detected": 0,
+          "suspicious_persons_tracked": 0,
+          "reoccurrences_detected": 0,
+          "total_suspicious_persons": 0,
+          "face_detection_rate": 0.0,
+          "implementation_status": "PLACEHOLDER - Not fully implemented",
+          "requires_modules": [
+            "Face detection (MTCNN, RetinaFace)",
+            "Face recognition (FaceNet, ArcFace)",
+            "Face embedding database",
+            "Person re-identification"
+          ]
+        },
+        "persons_summary": {
+          "total_persons": 0,
+          "persons": []
+        },
+        "reoccurrence_events_count": 0,
+        "faces_detected_in_test": 0
+      }
+    },
+    {
+      "name": "Placeholder Module Tests",
+      "status": "PASSED",
+      "details": {
+        "placeholder_results": {
+          "fight_detection": {
+            "initialized": true,
+            "detection_test": "no_detect_method",
+            "available_methods": [
+              "analyze_keyframes_for_fights",
+              "confidence_threshold",
+              "config",
+              "create_fight_events",
+              "detect_fight_in_frame",
+              "detection_stats",
+              "enabled",
+              "get_detection_stats"
+            ]
+          },
+          "wall_jump_detection": {
+            "initialized": true,
+            "detection_test": "no_detect_method",
+            "available_methods": [
+              "analyze_keyframes_for_wall_jumps",
+              "confidence_threshold",
+              "config",
+              "create_wall_jump_events",
+              "detect_wall_jump_in_frame",
+              "detection_stats",
+              "enabled",
+              "get_detection_stats"
+            ]
+          },
+          "accident_detection": {
+            "initialized": true,
+            "detection_test": "no_detect_method",
+            "available_methods": [
+              "analyze_keyframes_for_accidents",
+              "confidence_threshold",
+              "config",
+              "create_accident_events",
+              "detect_accident_in_frame",
+              "detection_stats",
+              "enabled",
+              "get_detection_stats"
+            ]
+          }
+        },
+        "success_rate": 1.0,
+        "total_placeholders": 3,
+        "working_placeholders": 3
+      }
+    },
+    {
+      "name": "Pipeline Integration",
+      "status": "PASSED",
+      "details": {
+        "pipeline_initialized": true,
+        "components_status": {
+          "video_processor": true,
+          "event_detector": true,
+          "deduplication_engine": true,
+          "segmentation_engine": true,
+          "highlight_generator": true,
+          "compressor": true,
+          "report_generator": true,
+          "object_detector": true
+        },
+        "config_test": {
+          "has_config": true,
+          "object_detection_enabled": true,
+          "facial_recognition_enabled": true
+        },
+        "integration_score": 1.0,
+        "all_components_working": true
+      }
+    },
+    {
+      "name": "Video Processing (if video available)",
+      "status": "PASSED",
+      "details": {
+        "test_failed": true,
+        "error": "'DetectifAIEventProcessor' object has no attribute 'process_security_events'"
+      }
+    }
+  ]
+}
