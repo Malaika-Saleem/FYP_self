@@ -1,7 +1,9 @@
 # Dependencies and build files
 .venv/
 venv/
-
+node_modules/
+.env
+.env.local
 
 # Python cache
 __pycache__/
@@ -9,7 +11,10 @@ __pycache__/
 *.pyo
 *.pyd
 
-
+# Next.js build files
+.next/
+out/
+build/
 
 # OS files
 .DS_Store
@@ -19,17 +24,30 @@ Thumbs.db
 .vscode/
 .idea/
 
-
+# Logs
+*.log
+logs/
 
 # Temporary files
 *.tmp
 temp/
 tmp/
 
+# MinIO data (local storage)
+minio-data/
 
 # Test files
 test_*.py
 *_test.py
 temp_*.jpg
 temp_*.mp4
+
+# Video processing outputs (local)
+video_processing_outputs/
+uploads/
+
+# Package manager files
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
 
