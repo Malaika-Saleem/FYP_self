@@ -543,9 +543,22 @@ def get_video_results(video_id):
     if video_id in processing_status:
         status = processing_status[video_id]
         
-        if status['status'] != 'completed':
+        if status['status'] == 'processing':
+            # Return partial results while processing
             return jsonify({
-                'error': 'Processing not completed',
+                'video_id': video_id,
+                'status': 'processing',
+                'progress': status.get('progress', 0),
+                'message': status.get('message', 'Processing...'),
+                'compressed_video_available': False,
+                'keyframes_available': False,
+                'reports_available': False
+            }), 200
+        
+        if status['status'] == 'failed':
+            return jsonify({
+                'error': 'Processing failed',
+                'message': status.get('message', 'Unknown error'),
                 'current_status': status['status']
             }), 400
         
