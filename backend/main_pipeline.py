@@ -110,6 +110,11 @@ class CompleteVideoProcessingPipeline:
             'processing_stats': self.processing_stats,
             'outputs': {}
         }
+        # Ensure there is a concrete output directory for this run so downstream
+        # steps (annotated video creation, reports, etc.) can write reliably.
+        output_dir = os.path.join(self.config.output_base_dir, output_name)
+        os.makedirs(output_dir, exist_ok=True)
+        results['outputs']['output_directory'] = output_dir
         
         try:
             # Step 1: Extract keyframes with adaptive enhancement
