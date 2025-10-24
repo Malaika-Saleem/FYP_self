@@ -50,9 +50,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Configuration
-UPLOAD_FOLDER = 'uploads'
-OUTPUT_FOLDER = 'video_processing_outputs'
+# Configuration - use absolute paths to handle different working directories
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # Project root
+UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
+OUTPUT_FOLDER = os.path.join(BASE_DIR, 'video_processing_outputs')
 ALLOWED_EXTENSIONS = {'mp4', 'avi', 'mov', 'mkv', 'wmv', 'flv'}
 MAX_CONTENT_LENGTH = 500 * 1024 * 1024  # 500MB max file size
 
@@ -500,7 +501,7 @@ def get_status(video_id):
         return jsonify(processing_status[video_id]), 200
     
     # Check if video files exist on disk (recovered processing)
-    output_dir = os.path.join('video_processing_outputs', video_id)
+    output_dir = os.path.join(OUTPUT_FOLDER, video_id)
     if os.path.exists(output_dir):
         # Recover status from disk
         recovered_status = {
@@ -567,10 +568,10 @@ def get_video_results(video_id):
             output_dir = status['results']['output_directory']
         else:
             # Fallback to standard directory structure
-            output_dir = os.path.join('video_processing_outputs', video_id)
+            output_dir = os.path.join(OUTPUT_FOLDER, video_id)
     else:
         # Check if video files exist on disk (for recovered/restarted servers)
-        output_dir = os.path.join('video_processing_outputs', video_id)
+        output_dir = os.path.join(OUTPUT_FOLDER, video_id)
         if not os.path.exists(output_dir):
             return jsonify({'error': 'Video not found'}), 404
         
@@ -959,25 +960,37 @@ def serve_compressed_video(video_id):
     """Serve compressed processed video"""
     try:
         # Find the compressed video file
-        output_dir = os.path.join('video_processing_outputs', video_id, 'compressed')
+        output_dir = os.path.join(OUTPUT_FOLDER, video_id, 'compressed')
+        logger.info(f"Looking for compressed video in: {output_dir}")
+        
         if not os.path.exists(output_dir):
-            return jsonify({'error': 'Video not found'}), 404
+            logger.error(f"Compressed video directory not found: {output_dir}")
+            return jsonify({'error': f'Video directory not found: {output_dir}'}), 404
             
         # Look for compressed video files
-        for file in os.listdir(output_dir):
+        files = os.listdir(output_dir)
+        logger.info(f"Files in compressed directory: {files}")
+        
+        for file in files:
             if file.endswith('.mp4'):
                 video_path = os.path.join(output_dir, file)
+                logger.info(f"Serving compressed video: {video_path}")
                 response = send_file(
                     video_path,
                     mimetype='video/mp4',
                     as_attachment=False,
                     download_name=file
                 )
-                # Add CORS and caching headers for video playback
+                # Add headers for video playback and streaming
                 response.headers['Accept-Ranges'] = 'bytes'
                 response.headers['Cache-Control'] = 'no-cache'
+                response.headers['Access-Control-Allow-Origin'] = '*'
+                response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+                response.headers['Access-Control-Allow-Headers'] = 'Range'
+                response.headers['Content-Type'] = 'video/mp4'
                 return response
         
+        logger.error(f"No .mp4 file found in: {output_dir}")
         return jsonify({'error': 'No compressed video found'}), 404
         
     except Exception as e:
@@ -988,13 +1001,13 @@ def serve_compressed_video(video_id):
 def get_video_keyframes(video_id):
     """Get list of keyframes with detection results"""
     try:
-        frames_dir = os.path.join('video_processing_outputs', video_id, 'frames')
+        frames_dir = os.path.join(OUTPUT_FOLDER, video_id, 'frames')
         if not os.path.exists(frames_dir):
             return jsonify({'error': 'Keyframes not found'}), 404
         
         # Load detection metadata
         detection_metadata = {}
-        detection_metadata_path = os.path.join('video_processing_outputs', video_id, 'detection_metadata.json')
+        detection_metadata_path = os.path.join(OUTPUT_FOLDER, video_id, 'detection_metadata.json')
         if os.path.exists(detection_metadata_path):
             try:
                 with open(detection_metadata_path, 'r') as f:
@@ -1068,7 +1081,7 @@ def get_video_keyframes(video_id):
 def serve_keyframe(video_id, filename):
     """Serve individual keyframe image"""
     try:
-        frames_dir = os.path.join('video_processing_outputs', video_id, 'frames')
+        frames_dir = os.path.join(OUTPUT_FOLDER, video_id, 'frames')
         keyframe_path = os.path.join(frames_dir, filename)
         
         if not os.path.exists(keyframe_path):

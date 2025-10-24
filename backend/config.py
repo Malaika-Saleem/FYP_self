@@ -154,8 +154,8 @@ class VideoProcessingConfig:
     # ===== OBJECT DETECTION PARAMETERS =====
     # Configuration for fire, knife, gun detection
     
-    # Models directory path
-    models_dir: str = "models"
+    # Models directory path (relative to backend directory when running from project root)
+    models_dir: str = os.path.join(os.path.dirname(__file__), "models")
     
     # Object detection confidence threshold (0.1-0.9)
     object_detection_confidence: float = 0.5

@@ -1,10 +1,11 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { ArrowLeft, Download, Play, Pause } from 'lucide-react'
+import { ArrowLeft, Download, Play, Pause, Volume2, VolumeX, Maximize, SkipForward, SkipBack } from 'lucide-react'
+import { Slider } from "@/components/ui/slider"
 
 interface Keyframe {
   filename: string
@@ -57,10 +58,91 @@ export default function VideoResults({ params }: { params: { videoId: string } }
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showOnlyDetections, setShowOnlyDetections] = useState(true)
+  
+  // Video player state
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [currentTime, setCurrentTime] = useState(0)
+  const [duration, setDuration] = useState(0)
+  const [volume, setVolume] = useState(1)
+  const [isMuted, setIsMuted] = useState(false)
+  const [showControls, setShowControls] = useState(true)
+  const [videoError, setVideoError] = useState<string | null>(null)
+  const [isVideoLoading, setIsVideoLoading] = useState(true)
 
   useEffect(() => {
     fetchVideoResults()
   }, [params.videoId])
+
+  // Video player controls
+  const togglePlay = () => {
+    if (videoRef.current) {
+      if (isPlaying) {
+        videoRef.current.pause()
+      } else {
+        videoRef.current.play()
+      }
+      setIsPlaying(!isPlaying)
+    }
+  }
+
+  const handleTimeUpdate = () => {
+    if (videoRef.current) {
+      setCurrentTime(videoRef.current.currentTime)
+    }
+  }
+
+  const handleLoadedMetadata = () => {
+    if (videoRef.current) {
+      setDuration(videoRef.current.duration)
+      setIsVideoLoading(false)
+    }
+  }
+
+  const handleSeek = (value: number[]) => {
+    if (videoRef.current) {
+      videoRef.current.currentTime = value[0]
+      setCurrentTime(value[0])
+    }
+  }
+
+  const handleVolumeChange = (value: number[]) => {
+    if (videoRef.current) {
+      const newVolume = value[0]
+      videoRef.current.volume = newVolume
+      setVolume(newVolume)
+      setIsMuted(newVolume === 0)
+    }
+  }
+
+  const toggleMute = () => {
+    if (videoRef.current) {
+      videoRef.current.muted = !isMuted
+      setIsMuted(!isMuted)
+    }
+  }
+
+  const skipTime = (seconds: number) => {
+    if (videoRef.current) {
+      videoRef.current.currentTime = Math.max(0, Math.min(duration, currentTime + seconds))
+    }
+  }
+
+  const toggleFullscreen = () => {
+    if (videoRef.current) {
+      if (document.fullscreenElement) {
+        document.exitFullscreen()
+      } else {
+        videoRef.current.requestFullscreen()
+      }
+    }
+  }
+
+  const formatTime = (time: number) => {
+    const minutes = Math.floor(time / 60)
+    const seconds = Math.floor(time % 60)
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`
+  }
 
   const fetchVideoResults = async () => {
     try {
@@ -177,7 +259,7 @@ export default function VideoResults({ params }: { params: { videoId: string } }
           </div>
         </div>
 
-        {/* Processed Video */}
+        {/* Processed Video with Custom Player */}
         {results?.compressed_video_available && (
           <Card>
             <CardHeader>
@@ -187,24 +269,198 @@ export default function VideoResults({ params }: { params: { videoId: string } }
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="aspect-video bg-black rounded-lg overflow-hidden">
+              <div 
+                className="relative bg-black rounded-lg overflow-hidden group"
+                onMouseEnter={() => setShowControls(true)}
+                onMouseLeave={() => setShowControls(true)}
+              >
+                {/* Video Element */}
                 <video 
-                  controls 
-                  className="w-full h-full"
+                  ref={videoRef}
+                  className="w-full aspect-video"
                   preload="metadata"
+                  crossOrigin="anonymous"
+                  onTimeUpdate={handleTimeUpdate}
+                  onLoadedMetadata={handleLoadedMetadata}
+                  onEnded={() => setIsPlaying(false)}
+                  onClick={togglePlay}
+                  onError={(e) => {
+                    console.error('Video error:', e)
+                    const videoElement = e.target as HTMLVideoElement
+                    const errorCode = videoElement.error?.code
+                    const errorMessage = videoElement.error?.message || 'Unknown error'
+                    console.error('Video error code:', errorCode)
+                    console.error('Video error message:', errorMessage)
+                    setVideoError(`Video playback error (code ${errorCode}): ${errorMessage}`)
+                    setIsVideoLoading(false)
+                  }}
+                  onLoadStart={() => setIsVideoLoading(true)}
+                  onCanPlay={() => setIsVideoLoading(false)}
                 >
                   <source 
-                    src={`/api/video/compressed/${params.videoId}`} 
+                    src={`http://localhost:5000/api/video/${params.videoId}/compressed`} 
                     type="video/mp4" 
                   />
                   Your browser does not support the video tag.
                 </video>
+
+                {/* Custom Controls Overlay */}
+                <div 
+                  className={`absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-4 transition-opacity duration-300 ${
+                    showControls ? 'opacity-100' : 'opacity-0'
+                  }`}
+                >
+                  {/* Progress Bar */}
+                  <div className="mb-3">
+                    <Slider
+                      value={[currentTime]}
+                      max={duration || 100}
+                      step={0.1}
+                      onValueChange={handleSeek}
+                      className="w-full cursor-pointer"
+                    />
+                    <div className="flex justify-between text-xs text-white mt-1">
+                      <span>{formatTime(currentTime)}</span>
+                      <span>{formatTime(duration)}</span>
+                    </div>
+                  </div>
+
+                  {/* Control Buttons */}
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2">
+                      {/* Play/Pause */}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={togglePlay}
+                        className="text-white hover:bg-white/20"
+                      >
+                        {isPlaying ? (
+                          <Pause className="w-5 h-5" />
+                        ) : (
+                          <Play className="w-5 h-5" />
+                        )}
+                      </Button>
+
+                      {/* Skip Backward */}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => skipTime(-5)}
+                        className="text-white hover:bg-white/20"
+                        title="Skip back 5s"
+                      >
+                        <SkipBack className="w-4 h-4" />
+                      </Button>
+
+                      {/* Skip Forward */}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => skipTime(5)}
+                        className="text-white hover:bg-white/20"
+                        title="Skip forward 5s"
+                      >
+                        <SkipForward className="w-4 h-4" />
+                      </Button>
+
+                      {/* Volume Control */}
+                      <div className="flex items-center space-x-2">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={toggleMute}
+                          className="text-white hover:bg-white/20"
+                        >
+                          {isMuted || volume === 0 ? (
+                            <VolumeX className="w-4 h-4" />
+                          ) : (
+                            <Volume2 className="w-4 h-4" />
+                          )}
+                        </Button>
+                        <Slider
+                          value={[isMuted ? 0 : volume]}
+                          max={1}
+                          step={0.1}
+                          onValueChange={handleVolumeChange}
+                          className="w-20"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Fullscreen */}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={toggleFullscreen}
+                      className="text-white hover:bg-white/20"
+                    >
+                      <Maximize className="w-4 h-4" />
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Loading Indicator */}
+                {isVideoLoading && !videoError && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/50">
+                    <div className="text-center">
+                      <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-white mx-auto mb-2"></div>
+                      <p className="text-white text-sm">Loading video...</p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Error Message */}
+                {videoError && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/80">
+                    <div className="text-center p-6 max-w-md">
+                      <p className="text-red-400 text-lg font-semibold mb-2">Video Playback Error</p>
+                      <p className="text-white text-sm">{videoError}</p>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setVideoError(null)
+                          setIsVideoLoading(true)
+                          if (videoRef.current) {
+                            videoRef.current.load()
+                          }
+                        }}
+                        className="mt-4 text-white border-white hover:bg-white/10"
+                      >
+                        Retry
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Center Play Button Overlay (when paused) */}
+                {!isPlaying && !isVideoLoading && !videoError && (
+                  <div 
+                    className="absolute inset-0 flex items-center justify-center cursor-pointer"
+                    onClick={togglePlay}
+                  >
+                    <div className="bg-white/20 backdrop-blur-sm rounded-full p-6 hover:bg-white/30 transition-colors">
+                      <Play className="w-12 h-12 text-white" />
+                    </div>
+                  </div>
+                )}
               </div>
+
               <div className="mt-4 flex items-center justify-between">
                 <p className="text-sm text-gray-600 dark:text-gray-400">
-                  Fire detection results with corrected labels (fire/smoke)
+                  Fire detection results with annotated bounding boxes
                 </p>
-                <Button variant="outline" size="sm">
+                <Button 
+                  variant="outline" 
+                  size="sm"
+                  onClick={() => {
+                    const link = document.createElement('a')
+                    link.href = `http://localhost:5000/api/video/${params.videoId}/compressed`
+                    link.download = `${params.videoId}_compressed.mp4`
+                    link.click()
+                  }}
+                >
                   <Download className="w-4 h-4 mr-2" />
                   Download Video
                 </Button>

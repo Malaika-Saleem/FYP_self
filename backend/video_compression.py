@@ -163,12 +163,30 @@ class VideoCompressor:
             # Adjust resolution if needed
             output_width, output_height = self._get_output_dimensions(width, height)
             
-            # Set up video writer
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            out = cv2.VideoWriter(output_path, fourcc, fps, (output_width, output_height))
+            # Set up video writer with H.264 codec for better browser compatibility
+            # Try multiple codecs in order of preference
+            codec_options = [
+                'avc1',  # H.264 (best browser support)
+                'H264',  # H.264 alternative
+                'X264',  # H.264 alternative
+                'mp4v'   # MPEG-4 fallback
+            ]
             
-            if not out.isOpened():
-                logger.error("Cannot create output video writer")
+            out = None
+            for codec in codec_options:
+                try:
+                    fourcc = cv2.VideoWriter_fourcc(*codec)
+                    out = cv2.VideoWriter(output_path, fourcc, fps, (output_width, output_height))
+                    if out.isOpened():
+                        logger.info(f"Using codec: {codec}")
+                        break
+                    out.release()
+                except Exception as e:
+                    logger.warning(f"Codec {codec} failed: {e}")
+                    continue
+            
+            if not out or not out.isOpened():
+                logger.error("Cannot create output video writer with any codec")
                 cap.release()
                 return ""
             
