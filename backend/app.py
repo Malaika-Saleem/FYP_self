@@ -967,12 +967,16 @@ def serve_compressed_video(video_id):
         for file in os.listdir(output_dir):
             if file.endswith('.mp4'):
                 video_path = os.path.join(output_dir, file)
-                return send_file(
+                response = send_file(
                     video_path,
                     mimetype='video/mp4',
                     as_attachment=False,
                     download_name=file
                 )
+                # Add CORS and caching headers for video playback
+                response.headers['Accept-Ranges'] = 'bytes'
+                response.headers['Cache-Control'] = 'no-cache'
+                return response
         
         return jsonify({'error': 'No compressed video found'}), 404
         
@@ -987,10 +991,34 @@ def get_video_keyframes(video_id):
         frames_dir = os.path.join('video_processing_outputs', video_id, 'frames')
         if not os.path.exists(frames_dir):
             return jsonify({'error': 'Keyframes not found'}), 404
+        
+        # Load detection metadata
+        detection_metadata = {}
+        detection_metadata_path = os.path.join('video_processing_outputs', video_id, 'detection_metadata.json')
+        if os.path.exists(detection_metadata_path):
+            try:
+                with open(detection_metadata_path, 'r') as f:
+                    detection_metadata = json.load(f)
+            except Exception as e:
+                logger.warning(f"Could not load detection metadata: {e}")
+        
+        # Build detection lookup dictionary
+        detection_lookup = {}
+        for item in detection_metadata.get('detection_summary', []):
+            original_filename = os.path.basename(item['original_path'])
+            annotated_filename = os.path.basename(item['annotated_path']) if 'annotated_path' in item else None
+            detection_lookup[original_filename] = {
+                'has_detections': True,
+                'detection_count': item.get('detection_count', 0),
+                'objects': item.get('objects', []),
+                'confidence_avg': item.get('confidence_avg', 0.0),
+                'annotated_filename': annotated_filename
+            }
             
         keyframes = []
         for file in os.listdir(frames_dir):
-            if file.endswith('.jpg'):
+            # Filter out annotated versions - only include original keyframes
+            if file.endswith('.jpg') and not file.endswith('_annotated.jpg'):
                 # Extract timestamp safely
                 timestamp = 0.0
                 try:
@@ -1000,11 +1028,26 @@ def get_video_keyframes(video_id):
                 except (ValueError, IndexError):
                     timestamp = 0.0
                 
-                keyframes.append({
+                # Build keyframe data with detection info
+                keyframe_data = {
                     'filename': file,
                     'url': f'/api/video/{video_id}/keyframe/{file}',
-                    'timestamp': timestamp
-                })
+                    'timestamp': timestamp,
+                    'has_detections': file in detection_lookup
+                }
+                
+                # Add detection details and annotated frame URL if available
+                if file in detection_lookup:
+                    detection_info = detection_lookup[file]
+                    keyframe_data['detection_count'] = detection_info['detection_count']
+                    keyframe_data['objects'] = detection_info['objects']
+                    keyframe_data['confidence_avg'] = detection_info['confidence_avg']
+                    
+                    # Provide annotated frame URL if it exists
+                    if detection_info['annotated_filename']:
+                        keyframe_data['annotated_url'] = f'/api/video/{video_id}/keyframe/{detection_info["annotated_filename"]}'
+                
+                keyframes.append(keyframe_data)
         
         # Sort by timestamp
         keyframes.sort(key=lambda x: x['timestamp'])
@@ -1012,7 +1055,9 @@ def get_video_keyframes(video_id):
         return jsonify({
             'video_id': video_id,
             'keyframes': keyframes,
-            'total_keyframes': len(keyframes)
+            'total_keyframes': len(keyframes),
+            'keyframes_with_detections': detection_metadata.get('frames_with_detections', 0),
+            'objects_detected': detection_metadata.get('objects_detected', {})
         })
         
     except Exception as e:

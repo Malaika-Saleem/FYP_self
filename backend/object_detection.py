@@ -413,11 +413,11 @@ class ObjectDetector:
         for obj in detection_result.detected_objects:
             x1, y1, x2, y2 = obj.bbox
             
-            # Choose color based on object class
+            # Choose color based on object class (BGR format)
             color_map = {
-                'fire': (0, 0, 255),      # Red
-                'knife': (0, 165, 255),   # Orange
-                'gun': (0, 0, 139)        # Dark Red
+                'fire': (255, 255, 0),    # Neon Cyan/Blue
+                'knife': (0, 255, 255),   # Neon Yellow
+                'gun': (0, 255, 0)        # Neon Green
             }
             color = color_map.get(obj.class_name, (255, 255, 255))  # Default white
             
@@ -528,6 +528,124 @@ class ObjectDetectionIntegrator:
         logger.info(f"📊 Annotated {len(annotated_frames)} frames with detections out of {len(keyframes)} total keyframes")
         
         return detection_results, object_events
+    
+    def create_annotated_video(self, video_path: str, detection_results: List, output_path: str = None) -> str:
+        """
+        Create an annotated video with bounding boxes drawn on frames with detections
+        
+        Args:
+            video_path: Path to the original video
+            detection_results: List of ObjectDetectionResult from keyframe detection
+            output_path: Optional output path for annotated video
+            
+        Returns:
+            Path to the created annotated video
+        """
+        if not self.detector or not detection_results:
+            logger.warning("No detector or detection results available for video annotation")
+            return None
+        
+        logger.info(f"🎨 Creating annotated video with bounding boxes...")
+        
+        # Open input video
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            logger.error(f"Cannot open video: {video_path}")
+            return None
+        
+        # Get video properties
+        fps = int(cap.get(cv2.CAP_PROP_FPS))
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        # Build detection lookup by timestamp
+        detection_lookup = {}
+        for result in detection_results:
+            if result.total_detections > 0:
+                detection_lookup[result.timestamp] = result
+        
+        # Create output path if not provided
+        if output_path is None:
+            video_dir = os.path.dirname(video_path)
+            video_name = os.path.splitext(os.path.basename(video_path))[0]
+            output_path = os.path.join(video_dir, f"{video_name}_annotated.mp4")
+        
+        # Ensure output directory exists
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        
+        # Create video writer
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+        
+        if not out.isOpened():
+            logger.error(f"Cannot create output video: {output_path}")
+            cap.release()
+            return None
+        
+        frame_count = 0
+        frames_annotated = 0
+        
+        logger.info(f"Processing {total_frames} frames at {fps} FPS...")
+        
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            
+            # Calculate timestamp
+            timestamp = round(frame_count / fps, 2)
+            
+            # Check if this timestamp has detections
+            if timestamp in detection_lookup:
+                result = detection_lookup[timestamp]
+                
+                # Draw bounding boxes and labels
+                for obj in result.detected_objects:
+                    x1, y1, x2, y2 = obj.bbox
+                    
+                    # Choose color based on object class (BGR format)
+                    color_map = {
+                        'fire': (255, 255, 0),    # Neon Cyan/Blue
+                        'knife': (0, 255, 255),   # Neon Yellow
+                        'gun': (0, 255, 0)        # Neon Green
+                    }
+                    color = color_map.get(obj.class_name, (255, 255, 255))
+                    
+                    # Draw bounding box
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                    
+                    # Draw label with confidence
+                    label = f"{obj.class_name}: {obj.confidence:.2f}"
+                    label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+                    
+                    # Draw label background
+                    cv2.rectangle(frame, (x1, y1 - label_size[1] - 10), 
+                                 (x1 + label_size[0], y1), color, -1)
+                    
+                    # Draw label text
+                    cv2.putText(frame, label, (x1, y1 - 5), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                
+                frames_annotated += 1
+            
+            # Write frame to output video
+            out.write(frame)
+            frame_count += 1
+            
+            # Progress logging
+            if frame_count % 100 == 0:
+                progress = (frame_count / total_frames) * 100
+                logger.info(f"Progress: {progress:.1f}% ({frame_count}/{total_frames} frames)")
+        
+        # Release resources
+        cap.release()
+        out.release()
+        
+        logger.info(f"✅ Annotated video created: {output_path}")
+        logger.info(f"📊 Annotated {frames_annotated} frames out of {total_frames} total frames")
+        
+        return output_path
     
     def get_object_detection_summary(self) -> Dict[str, Any]:
         """Get summary of object detection results"""

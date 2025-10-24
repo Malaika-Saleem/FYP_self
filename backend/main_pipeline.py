@@ -268,13 +268,46 @@ class CompleteVideoProcessingPipeline:
             
             logger.info(f"✅ Generated {len(highlight_paths)} highlight reels")
             
+            # Step 5.5: Create annotated video with bounding boxes (if detections exist)
+            annotated_video_path = None
+            if self.config.enable_object_detection and detection_results:
+                logger.info("🎨 Step 5.5: Creating annotated video with bounding boxes...")
+                step_start = time.time()
+                
+                try:
+                    # Create annotated video with detection bounding boxes
+                    annotated_output_path = os.path.join(
+                        results['outputs']['output_directory'], 
+                        f"{output_name}_annotated.mp4"
+                    )
+                    
+                    annotated_video_path = self.object_detector.create_annotated_video(
+                        video_path, 
+                        detection_results,
+                        annotated_output_path
+                    )
+                    
+                    self.processing_stats['component_times']['video_annotation'] = time.time() - step_start
+                    
+                    if annotated_video_path:
+                        logger.info(f"✅ Annotated video created: {annotated_video_path}")
+                        results['outputs']['annotated_video'] = annotated_video_path
+                    else:
+                        logger.warning("⚠️ Annotated video creation failed")
+                        
+                except Exception as e:
+                    logger.error(f"Error creating annotated video: {str(e)}")
+            
             # Step 6: Compress video
             if self.config.generate_compressed_video:
                 logger.info("🗜️  Step 6: Compressing video...")
                 step_start = time.time()
                 
+                # Compress the annotated video if it exists, otherwise compress original
+                video_to_compress = annotated_video_path if annotated_video_path else video_path
+                
                 compressed_path = self.compressor.compress_video(
-                    video_path, 
+                    video_to_compress, 
                     f"{output_name}_compressed.{self.config.video_output_format}"
                 )
                 

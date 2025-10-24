@@ -9,6 +9,7 @@ import { ArrowLeft, Download, Play, Pause } from 'lucide-react'
 interface Keyframe {
   filename: string
   url: string
+  annotated_url?: string
   timestamp: string
   has_detections?: boolean
   detection_count?: number
@@ -303,7 +304,7 @@ export default function VideoResults({ params }: { params: { videoId: string } }
                     >
                       <div className="aspect-video bg-gray-100 dark:bg-gray-700 relative">
                         <img
-                          src={`http://localhost:5000${keyframe.url}`}
+                          src={`http://localhost:5000${showOnlyDetections && keyframe.annotated_url ? keyframe.annotated_url : keyframe.url}`}
                           alt={`Keyframe at ${keyframe.timestamp}s`}
                           className="w-full h-full object-cover"
                           loading="lazy"
