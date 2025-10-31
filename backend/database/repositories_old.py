@@ -29,7 +29,8 @@ class BaseRepository:
     def __init__(self, db_manager):
         self.db = db_manager.db
         self.minio = db_manager.minio_client
-        self.bucket = db_manager.config.minio_bucket
+        self.video_bucket = db_manager.config.minio_video_bucket
+        self.keyframe_bucket = db_manager.config.minio_keyframe_bucket
 
 class VideoRepository(BaseRepository):
     """Repository for video_file collection operations"""
@@ -171,12 +172,12 @@ class VideoRepository(BaseRepository):
     def upload_video_to_minio(self, local_path: str, video_id: str) -> str:
         """Upload video file to MinIO storage"""
         try:
-            minio_path = f"videos/original/{video_id}.mp4"
+            minio_path = f"original/{video_id}/video.mp4"
             
             with open(local_path, 'rb') as file_data:
                 file_info = os.stat(local_path)
                 self.minio.put_object(
-                    self.bucket,
+                    self.video_bucket,
                     minio_path,
                     file_data,
                     length=file_info.st_size,
@@ -193,7 +194,7 @@ class VideoRepository(BaseRepository):
     def get_video_presigned_url(self, minio_path: str, expires: timedelta = timedelta(hours=1)) -> str:
         """Generate presigned URL for video access"""
         try:
-            return self.minio.presigned_get_object(self.bucket, minio_path, expires=expires)
+            return self.minio.presigned_get_object(self.video_bucket, minio_path, expires=expires)
         except S3Error as e:
             logger.error(f"❌ Failed to generate presigned URL: {e}")
             return None
@@ -214,8 +215,8 @@ class KeyframeRepository(BaseRepository):
                 # Extract frame data from keyframe result
                 frame_data = kf_data.frame_data if hasattr(kf_data, 'frame_data') else kf_data
                 
-                # Upload keyframe image to MinIO
-                minio_path = f"keyframes/{video_id}/frame_{frame_data['frame_number']:06d}.jpg"
+                # Upload keyframe image to MinIO using correct bucket path structure
+                minio_path = f"{video_id}/frame_{frame_data['frame_number']:06d}.jpg"
                 
                 # Handle both file path and frame data scenarios
                 if 'frame_path' in frame_data:
@@ -224,7 +225,7 @@ class KeyframeRepository(BaseRepository):
                         with open(local_path, 'rb') as img_file:
                             file_info = os.stat(local_path)
                             self.minio.put_object(
-                                self.bucket,
+                                self.keyframe_bucket,
                                 minio_path,
                                 img_file,
                                 length=file_info.st_size,

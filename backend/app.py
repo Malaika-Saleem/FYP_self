@@ -283,31 +283,62 @@ def upload_video_db():
         if not allowed_file(file.filename):
             return jsonify({'error': 'Invalid file type. Allowed: mp4, avi, mov, mkv, wmv, flv'}), 400
         
-        # Generate video ID
+        # Generate video ID with consistent format
         video_id = f"video_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{os.urandom(4).hex()}"
         
-        # Save temporary file
+        # Save temporary file with original extension
         filename = secure_filename(file.filename)
-        temp_path = os.path.join(app.config['UPLOAD_FOLDER'], f"{video_id}_{filename}")
+        base, ext = os.path.splitext(filename)
+        temp_path = os.path.join(app.config['UPLOAD_FOLDER'], f"{video_id}/video{ext}")
+        os.makedirs(os.path.dirname(temp_path), exist_ok=True)
         file.save(temp_path)
         
         # Get user ID (if authenticated) - TODO: implement proper authentication
         user_id = request.form.get('user_id', None)
         
-        # Start background processing with database integration
-        thread = threading.Thread(
-            target=db_video_service.process_video_with_database_storage,
-            args=(temp_path, video_id, user_id)
-        )
-        thread.daemon = True
-        thread.start()
+        # Create initial video record in MongoDB
+        video_data = {
+            "video_id": video_id,
+            "user_id": user_id or "system",
+            "file_path": f"videos/{video_id}/video{ext}",
+            "upload_date": datetime.utcnow(),
+            "meta_data": {
+                "filename": filename,
+                "original_name": file.filename,
+                "processing_status": "uploading",
+                "processing_progress": 0,
+                "processing_message": "Starting upload to MinIO..."
+            }
+        }
         
-        return jsonify({
-            'success': True,
-            'video_id': video_id,
-            'message': 'Video uploaded successfully. Processing started with database storage.',
-            'status_url': f'/api/v2/video/status/{video_id}'
-        }), 200
+        # Start background processing with database integration
+        try:
+            thread = threading.Thread(
+                target=db_video_service.process_video_with_database_storage,
+                args=(temp_path, video_id, user_id),
+                daemon=True
+            )
+            thread.start()
+            
+            return jsonify({
+                'success': True,
+                'video_id': video_id,
+                'message': 'Video uploaded successfully. Processing started with database storage.',
+                'status_url': f'/api/v2/video/status/{video_id}'
+            }), 201
+            
+        except Exception as process_error:
+            logger.error(f"Failed to start video processing: {process_error}")
+            # Update status in database
+            db_video_service.video_repo.update_metadata(video_id, {
+                "processing_status": "failed",
+                "error_message": str(process_error)
+            })
+            raise
+            
+    except Exception as e:
+        logger.error(f"Database upload error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
         
     except Exception as e:
         logger.error(f"Database upload error: {str(e)}")
@@ -315,20 +346,31 @@ def upload_video_db():
 
 @app.route('/api/v2/video/status/<video_id>', methods=['GET'])
 def get_video_status_db(video_id):
-    """Get processing status from database"""
+    """Get processing status from database with fallback to in-memory status"""
     if not DATABASE_ENABLED:
-        return jsonify({'error': 'Database service not available'}), 503
-    
+        # Fallback to in-memory status if database not available
+        if video_id in processing_status:
+            return jsonify(processing_status[video_id]), 200
+        return jsonify({'error': 'Database service not available and video not found in memory'}), 503
+
     try:
         status_data = db_video_service.get_video_status(video_id)
-        
+
         if 'error' in status_data:
+            # Fallback to in-memory status if database lookup fails
+            if video_id in processing_status:
+                logger.info(f"Database lookup failed for {video_id}, falling back to in-memory status")
+                return jsonify(processing_status[video_id]), 200
             return jsonify(status_data), 404
-        
+
         return jsonify(status_data), 200
-        
+
     except Exception as e:
         logger.error(f"Database status check error: {str(e)}")
+        # Fallback to in-memory status on exception
+        if video_id in processing_status:
+            logger.info(f"Database error for {video_id}, falling back to in-memory status")
+            return jsonify(processing_status[video_id]), 200
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/v2/video/keyframes/<video_id>', methods=['GET'])
@@ -543,7 +585,7 @@ def get_video_results(video_id):
     # First check if video is in memory status
     if video_id in processing_status:
         status = processing_status[video_id]
-        
+
         if status['status'] == 'processing':
             # Return partial results while processing
             return jsonify({
@@ -555,14 +597,14 @@ def get_video_results(video_id):
                 'keyframes_available': False,
                 'reports_available': False
             }), 200
-        
+
         if status['status'] == 'failed':
             return jsonify({
                 'error': 'Processing failed',
                 'message': status.get('message', 'Unknown error'),
                 'current_status': status['status']
             }), 400
-        
+
         # Check if status has results structure (normal processing)
         if 'results' in status and 'output_directory' in status['results']:
             output_dir = status['results']['output_directory']
@@ -570,36 +612,69 @@ def get_video_results(video_id):
             # Fallback to standard directory structure
             output_dir = os.path.join(OUTPUT_FOLDER, video_id)
     else:
+        # Check database for video status (for database-integrated processing)
+        if DATABASE_ENABLED:
+            try:
+                db_status = db_video_service.get_video_status(video_id)
+                if 'error' not in db_status:
+                    # Video found in database, construct results from database metadata
+                    meta_data = db_status.get('meta_data', {})
+
+                    # Check for compressed video in MinIO
+                    compressed_video_available = bool(meta_data.get('minio_compressed_path'))
+                    compressed_video_url = f'/api/video/compressed/{video_id}' if compressed_video_available else None
+
+                    # Check for keyframes
+                    keyframes_available = meta_data.get('keyframe_count', 0) > 0
+                    keyframes_count = meta_data.get('keyframe_count', 0)
+
+                    # Check for reports (assume available if processing completed)
+                    reports_available = db_status.get('status') == 'completed'
+
+                    return jsonify({
+                        'video_id': video_id,
+                        'status': db_status.get('status', 'unknown'),
+                        'compressed_video_available': compressed_video_available,
+                        'compressed_video_url': compressed_video_url,
+                        'keyframes_available': keyframes_available,
+                        'keyframes_count': keyframes_count,
+                        'keyframes_url': f'/api/v2/video/keyframes/{video_id}',  # Use v2 endpoint for database
+                        'reports_available': reports_available,
+                        'reports': []  # Database doesn't store report files locally
+                    }), 200
+            except Exception as e:
+                logger.warning(f"Database lookup failed for results: {e}")
+
         # Check if video files exist on disk (for recovered/restarted servers)
         output_dir = os.path.join(OUTPUT_FOLDER, video_id)
         if not os.path.exists(output_dir):
             return jsonify({'error': 'Video not found'}), 404
-        
+
         logger.info(f"📁 Found video files on disk for {video_id}, recovering results")
-    
+
     # Check for compressed video
     compressed_dir = os.path.join(output_dir, 'compressed')
     compressed_video_available = False
     compressed_video_url = None
-    
+
     if os.path.exists(compressed_dir):
         video_files = [f for f in os.listdir(compressed_dir) if f.endswith('.mp4')]
         if video_files:
             compressed_video_available = True
             compressed_video_url = f'/api/video/compressed/{video_id}'
-    
+
     # Check for keyframes
     frames_dir = os.path.join(output_dir, 'frames')
     keyframes_available = os.path.exists(frames_dir) and len([f for f in os.listdir(frames_dir) if f.endswith('.jpg')]) > 0
     keyframes_count = len([f for f in os.listdir(frames_dir) if f.endswith('.jpg')]) if keyframes_available else 0
-    
+
     # Check for reports
     reports_dir = os.path.join(output_dir, 'reports')
     reports_available = os.path.exists(reports_dir)
     report_files = []
     if reports_available:
         report_files = [f for f in os.listdir(reports_dir) if f.endswith('.json')]
-    
+
     return jsonify({
         'video_id': video_id,
         'compressed_video_available': compressed_video_available,

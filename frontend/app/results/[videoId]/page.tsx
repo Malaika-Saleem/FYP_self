@@ -149,8 +149,8 @@ export default function VideoResults({ params }: { params: { videoId: string } }
       setLoading(true)
       setError(null)
 
-      // Fetch video results
-      const resultsResponse = await fetch(`/api/video/results/${params.videoId}`)
+      // Fetch video results using database-integrated endpoint
+      const resultsResponse = await fetch(`/api/v2/video/results/${params.videoId}`)
       if (!resultsResponse.ok) {
         throw new Error('Failed to fetch video results')
       }
@@ -159,7 +159,7 @@ export default function VideoResults({ params }: { params: { videoId: string } }
 
       // Fetch keyframes if available (filter to show only detections by default)
       if (resultsData.keyframes_available) {
-        const keyframesResponse = await fetch(`/api/video/keyframes/${params.videoId}?filter_detections=${showOnlyDetections}`)
+        const keyframesResponse = await fetch(`/api/v2/video/keyframes/${params.videoId}?filter_detections=${showOnlyDetections}`)
         if (keyframesResponse.ok) {
           const keyframesData: KeyframesData = await keyframesResponse.json()
           setKeyframes(keyframesData.keyframes)
@@ -167,8 +167,8 @@ export default function VideoResults({ params }: { params: { videoId: string } }
         }
       }
 
-      // Fetch processing summary
-      const summaryResponse = await fetch(`/api/video/processing-summary/${params.videoId}`)
+      // Fetch processing summary using database-integrated endpoint
+      const summaryResponse = await fetch(`/api/v2/video/processing-summary/${params.videoId}`)
       if (summaryResponse.ok) {
         const summaryData: ProcessingSummary = await summaryResponse.json()
         setProcessingSummary(summaryData)
@@ -183,10 +183,10 @@ export default function VideoResults({ params }: { params: { videoId: string } }
   const toggleDetectionFilter = async () => {
     const newFilter = !showOnlyDetections
     setShowOnlyDetections(newFilter)
-    
+
     // Refetch keyframes with new filter
     if (results?.keyframes_available) {
-      const keyframesResponse = await fetch(`/api/video/keyframes/${params.videoId}?filter_detections=${newFilter}`)
+      const keyframesResponse = await fetch(`/api/v2/video/keyframes/${params.videoId}?filter_detections=${newFilter}`)
       if (keyframesResponse.ok) {
         const keyframesData: KeyframesData = await keyframesResponse.json()
         setKeyframes(keyframesData.keyframes)
@@ -297,9 +297,9 @@ export default function VideoResults({ params }: { params: { videoId: string } }
                   onLoadStart={() => setIsVideoLoading(true)}
                   onCanPlay={() => setIsVideoLoading(false)}
                 >
-                  <source 
-                    src={`http://localhost:5000/api/video/${params.videoId}/compressed`} 
-                    type="video/mp4" 
+                  <source
+                    src={results?.compressed_video_url ? `http://localhost:5000${results.compressed_video_url}` : `http://localhost:5000/api/video/${params.videoId}/compressed`}
+                    type="video/mp4"
                   />
                   Your browser does not support the video tag.
                 </video>
@@ -451,12 +451,12 @@ export default function VideoResults({ params }: { params: { videoId: string } }
                 <p className="text-sm text-gray-600 dark:text-gray-400">
                   Fire detection results with annotated bounding boxes
                 </p>
-                <Button 
-                  variant="outline" 
+                <Button
+                  variant="outline"
                   size="sm"
                   onClick={() => {
                     const link = document.createElement('a')
-                    link.href = `http://localhost:5000/api/video/${params.videoId}/compressed`
+                    link.href = results?.compressed_video_url ? `http://localhost:5000${results.compressed_video_url}` : `http://localhost:5000/api/video/${params.videoId}/compressed`
                     link.download = `${params.videoId}_compressed.mp4`
                     link.click()
                   }}

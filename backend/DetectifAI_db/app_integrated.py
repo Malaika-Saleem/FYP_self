@@ -499,9 +499,25 @@ def upload_video():
         file_size = file.tell()
         file.seek(0)
         
-        # Store in MinIO
-        object_name = f"{video_id}_{filename}"
-        minio_client.put_object(MINIO_BUCKET, object_name, open(video_path, 'rb'), file_size)
+        # Store in MinIO using standardized paths
+        from minio_config import VIDEOS_BUCKET, get_minio_paths
+        
+        minio_paths = get_minio_paths(video_id, filename)
+        object_name = minio_paths["original"]
+        
+        try:
+            with open(video_path, 'rb') as file_data:
+                minio_client.put_object(
+                    VIDEOS_BUCKET,
+                    object_name,
+                    file_data,
+                    file_size,
+                    content_type='video/mp4'
+                )
+                logger.info(f"✅ Video uploaded to MinIO: {object_name}")
+        except Exception as e:
+            logger.error(f"❌ MinIO upload failed: {e}")
+            raise
         
         # Create video record in database
         video_doc = {

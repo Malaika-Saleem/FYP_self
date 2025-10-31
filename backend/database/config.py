@@ -30,10 +30,11 @@ class DatabaseConfig:
         self.mongo_db_name = 'detectifai'
         
         # MinIO Local connection
-        self.minio_endpoint = os.getenv('MINIO_ENDPOINT', 'localhost:9000')
-        self.minio_access_key = os.getenv('MINIO_ACCESS_KEY', 'minioadmin')
-        self.minio_secret_key = os.getenv('MINIO_SECRET_KEY', 'minioadmin') 
-        self.minio_bucket = os.getenv('MINIO_BUCKET', 'detectifai')
+        self.minio_endpoint = os.getenv('MINIO_ENDPOINT', '127.0.0.1:9000')  # Use IP address instead of localhost
+        self.minio_access_key = os.getenv('MINIO_ACCESS_KEY', 'admin')
+        self.minio_secret_key = os.getenv('MINIO_SECRET_KEY', 'adminpassword')
+        self.minio_video_bucket = os.getenv('MINIO_VIDEO_BUCKET', 'detectifai-videos')
+        self.minio_keyframe_bucket = os.getenv('MINIO_KEYFRAME_BUCKET', 'detectifai-keyframes')
         self.minio_secure = os.getenv('MINIO_SECURE', 'false').lower() == 'true'
 
 class DatabaseManager:
@@ -88,15 +89,23 @@ class DatabaseManager:
         return self._minio_client
     
     def _ensure_bucket_exists(self):
-        """Ensure the detectifai bucket exists"""
+        """Ensure the detectifai buckets exist"""
         try:
-            if not self._minio_client.bucket_exists(self.config.minio_bucket):
-                self._minio_client.make_bucket(self.config.minio_bucket)
-                logger.info(f"✅ Created MinIO bucket: {self.config.minio_bucket}")
+            # Ensure video bucket exists
+            if not self._minio_client.bucket_exists(self.config.minio_video_bucket):
+                self._minio_client.make_bucket(self.config.minio_video_bucket)
+                logger.info(f"✅ Created MinIO video bucket: {self.config.minio_video_bucket}")
             else:
-                logger.info(f"✅ MinIO bucket exists: {self.config.minio_bucket}")
+                logger.info(f"✅ MinIO video bucket exists: {self.config.minio_video_bucket}")
+                
+            # Ensure keyframe bucket exists
+            if not self._minio_client.bucket_exists(self.config.minio_keyframe_bucket):
+                self._minio_client.make_bucket(self.config.minio_keyframe_bucket)
+                logger.info(f"✅ Created MinIO keyframe bucket: {self.config.minio_keyframe_bucket}")
+            else:
+                logger.info(f"✅ MinIO keyframe bucket exists: {self.config.minio_keyframe_bucket}")
         except S3Error as e:
-            logger.error(f"❌ Failed to create/check MinIO bucket: {e}")
+            logger.error(f"❌ Failed to create/check MinIO buckets: {e}")
             raise
     
     def test_connections(self):

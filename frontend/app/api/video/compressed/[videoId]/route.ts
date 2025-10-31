@@ -8,7 +8,7 @@ export async function GET(
     const videoId = params.videoId
     
     // Forward request to Flask backend for compressed video
-    const response = await fetch(`http://localhost:5000/api/video/${videoId}/compressed`, {
+    const response = await fetch(`http://localhost:5000/api/video/compressed/${videoId}`, {
       method: 'GET',
     })
 

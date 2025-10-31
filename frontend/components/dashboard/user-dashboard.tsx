@@ -60,6 +60,10 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
         throw new Error(data.error || 'Upload failed')
       }
 
+      if (!data.success) {
+        throw new Error(data.error || 'Upload failed')
+      }
+
       const videoId = data.video_id
       setUploadStatus(`✅ Upload successful! Processing video...`)
       setCurrentVideoId(videoId)
@@ -67,10 +71,15 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
       // Poll for processing completion
       const pollInterval = setInterval(async () => {
         try {
-          const statusResponse = await fetch(`/api/video/status/${videoId}`)
+          const statusResponse = await fetch(`/api/v2/video/status/${videoId}`)
           const statusData = await statusResponse.json()
           
-          if (statusData.status === 'completed') {
+          // Update UI with processing status
+          if (statusData.meta_data?.processing_status) {
+            setUploadStatus(`${statusData.meta_data.processing_message || 'Processing...'} (${statusData.meta_data.processing_progress || 0}%)`)
+          }
+          
+          if (statusData.meta_data?.processing_status === 'completed') {
             clearInterval(pollInterval)
             setUploadStatus("✅ Processing complete! Redirecting...")
             setTimeout(() => {

@@ -135,67 +135,67 @@ class OptimizedVideoProcessor:
         
         logger.info("OptimizedVideoProcessor initialized")
     
-    def extract_keyframes_optimized(self, video_path: str, output_dir: str, 
+    def extract_keyframes_optimized(self, video_path: str, output_dir: str,
                                    fps_interval: float = 1.0) -> List[KeyframeResult]:
         """
         Extract keyframes with optimized processing for surveillance video
-        
+
         Args:
             video_path: Path to input video
             output_dir: Directory to save keyframes
             fps_interval: Seconds between keyframes (default: 1 frame per second)
-            
+
         Returns:
             List of KeyframeResult objects
         """
         start_time = time.time()
         keyframes = []
-        
+
         try:
             # Open video
             cap = cv2.VideoCapture(video_path)
             if not cap.isOpened():
                 logger.error(f"Could not open video: {video_path}")
                 return []
-            
+
             # Get video properties
             fps = cap.get(cv2.CAP_PROP_FPS)
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             duration = total_frames / fps if fps > 0 else 0
-            
+
             logger.info(f"Video properties: {total_frames} frames, {fps:.2f} FPS, {duration:.2f}s")
-            
+
             # Calculate frame interval
             frame_interval = int(fps * fps_interval) if fps > 0 else 30
-            
+
             # Create output directory
             frames_dir = os.path.join(output_dir, 'frames')
             os.makedirs(frames_dir, exist_ok=True)
-            
+
             frame_count = 0
             extracted_count = 0
-            
+
             while True:
                 ret, frame = cap.read()
                 if not ret:
                     break
-                
+
                 # Extract keyframes at specified intervals
                 if frame_count % frame_interval == 0:
                     timestamp = frame_count / fps if fps > 0 else frame_count
-                    
+
                     # Assess frame quality
                     quality_score = self._assess_frame_quality(frame)
-                    
+
                     # Enhance frame if needed
                     enhanced_frame, enhancement_applied = self.frame_enhancer.enhance_frame_if_needed(frame)
-                    
-                    # Save keyframe
-                    frame_filename = f"keyframe_{timestamp:.2f}s_frame_{frame_count}.jpg"
+
+                    # Use consistent naming pattern for MinIO storage
+                    frame_filename = f"frame_{frame_count:06d}.jpg"
                     frame_path = os.path.join(frames_dir, frame_filename)
-                    
+
                     cv2.imwrite(frame_path, enhanced_frame)
-                    
+
                     # Create frame data
                     frame_data = FrameData(
                         frame_path=frame_path,
@@ -206,42 +206,42 @@ class OptimizedVideoProcessor:
                         burst_active=False,
                         enhancement_applied=enhancement_applied
                     )
-                    
+
                     keyframe_result = KeyframeResult(
                         frame_data=frame_data,
                         keyframe_score=quality_score,
                         selection_reason="Regular interval extraction"
                     )
-                    
+
                     keyframes.append(keyframe_result)
                     extracted_count += 1
-                    
+
                     # Update stats
                     if enhancement_applied:
                         self.processing_stats['frames_enhanced'] += 1
-                
+
                 frame_count += 1
                 self.processing_stats['frames_processed'] += 1
-                
+
                 # Progress logging
                 if frame_count % 1000 == 0:
                     progress = (frame_count / total_frames) * 100 if total_frames > 0 else 0
                     logger.info(f"Progress: {progress:.1f}% ({frame_count}/{total_frames} frames)")
-            
+
             cap.release()
-            
+
             # Update final statistics
             processing_time = time.time() - start_time
             self.processing_stats['keyframes_extracted'] = extracted_count
             self.processing_stats['total_processing_time'] = processing_time
-            
+
             logger.info(f"✅ Keyframe extraction complete:")
             logger.info(f"   📊 Extracted {extracted_count} keyframes from {frame_count} frames")
             logger.info(f"   ⚡ Enhanced {self.processing_stats['frames_enhanced']} frames")
             logger.info(f"   ⏱️  Processing time: {processing_time:.2f}s")
-            
+
             return keyframes
-            
+
         except Exception as e:
             logger.error(f"Error in keyframe extraction: {e}")
             return []

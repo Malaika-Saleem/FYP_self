@@ -25,6 +25,8 @@ from video_segmentation import VideoSegmentationEngine
 # Import database components
 from database.config import DatabaseManager
 from database.repositories import VideoRepository, EventRepository
+from database.keyframe_repository import KeyframeRepository
+from database.video_compression_service import VideoCompressionService
 from database.models import (
     convert_numpy_types, 
     seconds_to_milliseconds, 
@@ -44,9 +46,11 @@ class DatabaseIntegratedVideoService:
         # Initialize database connections
         self.db_manager = DatabaseManager()
         
-        # Initialize repositories (only schema-compliant ones)
+        # Initialize repositories (including keyframe and compression)
         self.video_repo = VideoRepository(self.db_manager)
         self.event_repo = EventRepository(self.db_manager)
+        self.keyframe_repo = KeyframeRepository(self.db_manager)
+        self.compression_service = VideoCompressionService(self.db_manager, self.config)
         
         # Initialize processing components
         self.video_processor = OptimizedVideoProcessor(self.config)
@@ -80,20 +84,22 @@ class DatabaseIntegratedVideoService:
             # Step 1: Extract video metadata and create database record
             video_metadata = self._extract_video_metadata(video_path)
             
-            # Create schema-compliant video record
+            # Create video record matching video_files MongoDB schema
             video_record = {
                 "video_id": video_id,
                 "user_id": user_id or "system",
-                "file_path": f"videos/{video_id}.mp4",
-                "fps": video_metadata.get("fps", 30.0),
-                "duration_secs": int(video_metadata.get("duration", 0)),
-                "file_size_bytes": video_metadata.get("file_size", 0),
-                "codec": "h264",  # default codec
+                "file_path": f"videos/{video_id}/video.mp4",
+                "minio_object_key": f"original/{video_id}/video.mp4",  # required by schema
+                "minio_bucket": self.video_repo.video_bucket,  # required by schema
+                "codec": "h264",  # required by schema
+                "fps": float(video_metadata.get("fps", 30.0)),  # must be double type
+                "upload_date": datetime.utcnow(),  # required by schema
+                "duration_secs": int(video_metadata.get("duration", 0)),  # must be int type
+                "file_size_bytes": int(video_metadata.get("file_size", 0)),  # must be long type
                 "meta_data": {
-                    "processing_status": "processing",
                     "filename": os.path.basename(video_path),
                     "resolution": video_metadata.get("resolution"),
-                    "frame_count": video_metadata.get("frame_count"),
+                    "processing_status": "processing",
                     "processing_progress": 0,
                     "processing_message": "Starting processing..."
                 }
@@ -111,12 +117,98 @@ class DatabaseIntegratedVideoService:
                 "minio_original_path": minio_path
             })
             
-            # Step 3: Extract keyframes
+            # Step 3: Extract keyframes and store in MinIO
             self.video_repo.update_metadata(video_id, {
                 "processing_progress": 15,
-                "processing_message": "Extracting keyframes..."
+                "processing_message": "Extracting and uploading keyframes..."
             })
             keyframes = self.video_processor.extract_keyframes(video_path)
+            
+            # Process keyframes directly for MinIO upload
+            keyframe_batch = []
+            for kf in keyframes:
+                frame_data = kf.frame_data if hasattr(kf, 'frame_data') else kf
+
+                # Extract keyframe information consistently
+                keyframe_info = {
+                    'frame_path': frame_data.frame_path if hasattr(frame_data, 'frame_path') else None,
+                    'frame_number': frame_data.frame_number if hasattr(frame_data, 'frame_number') else 0,
+                    'timestamp': frame_data.timestamp if hasattr(frame_data, 'timestamp') else 0.0,
+                    'enhancement_applied': frame_data.enhancement_applied if hasattr(frame_data, 'enhancement_applied') else False
+                }
+
+                # If we have a numpy frame directly, we might need to save it to a file first
+                if hasattr(frame_data, 'frame') and frame_data.frame is not None:
+                    # Save numpy array to temporary file for upload
+                    import tempfile
+                    import cv2
+                    import numpy as np
+
+                    with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as temp_file:
+                        temp_path = temp_file.name
+                        cv2.imwrite(temp_path, cv2.cvtColor(frame_data.frame, cv2.COLOR_RGB2BGR))
+                        keyframe_info['frame_path'] = temp_path
+
+                keyframe_batch.append(keyframe_info)
+            
+            # Process and upload keyframes to MinIO
+            logger.info(f"Uploading {len(keyframe_batch)} keyframes to MinIO...")
+            
+            keyframe_info = []
+            for idx, kf_info in enumerate(keyframe_batch):
+                frame_path = kf_info.get('frame_path')
+
+                if frame_path and os.path.exists(frame_path):
+                    try:
+                        # Create MinIO path
+                        frame_number = kf_info.get('frame_number', idx)
+                        timestamp = kf_info.get('timestamp', 0.0)
+                        minio_path = f"{video_id}/keyframes/frame_{frame_number:06d}.jpg"
+
+                        # Upload to MinIO with metadata
+                        with open(frame_path, 'rb') as f:
+                            file_size = os.path.getsize(frame_path)
+                            metadata = {
+                                "frame_number": str(frame_number),
+                                "timestamp": str(timestamp),
+                                "enhancement_applied": str(kf_info.get('enhancement_applied', False))
+                            }
+
+                            self.keyframe_repo.minio.put_object(
+                                self.keyframe_repo.bucket,
+                                minio_path,
+                                f,
+                                file_size,
+                                content_type='image/jpeg',
+                                metadata=metadata
+                            )
+
+                            keyframe_info.append({
+                                "frame_number": frame_number,
+                                "timestamp": timestamp,
+                                "minio_path": minio_path,
+                                "size_bytes": file_size,
+                                "uploaded_at": datetime.utcnow().isoformat()
+                            })
+
+                    except Exception as e:
+                        logger.error(f"Failed to upload keyframe {frame_path}: {e}")
+                        continue
+                        
+                if (idx + 1) % 10 == 0:
+                    logger.info(f"Uploaded {idx + 1}/{len(keyframe_batch)} keyframes")
+            
+            # Update video metadata with keyframe information
+            self.video_repo.update_metadata(video_id, {
+                "keyframe_info": keyframe_info,
+                "keyframe_count": len(keyframe_info),
+                "keyframe_bucket": self.keyframe_repo.bucket,
+                "upload_stats": {
+                    "total_frames": len(keyframe_batch),
+                    "uploaded_frames": len(keyframe_info),
+                    "upload_completed": datetime.utcnow().isoformat()
+                }
+            })
             
             # Step 4: Object detection (if enabled)
             detection_results = []
@@ -140,7 +232,8 @@ class DatabaseIntegratedVideoService:
                 object_events = self._create_object_events_from_detections(detection_results)
                 # Save events using EventRepository
                 for event in object_events:
-                    self.event_repo.save_event(video_id, event)
+                    event['video_id'] = video_id  # Add video_id to event data
+                    self.event_repo.save_event(event)
             
             # Step 6: Generate compressed video (optional)
             compressed_path = None
@@ -219,18 +312,30 @@ class DatabaseIntegratedVideoService:
                 # Get frame data
                 frame_data = keyframe.frame_data if hasattr(keyframe, 'frame_data') else keyframe
                 
-                if 'frame_path' in frame_data and os.path.exists(frame_data['frame_path']):
+                # Get frame path depending on structure
+                frame_path = (
+                    frame_data.frame_path if hasattr(frame_data, 'frame_path')
+                    else getattr(frame_data, 'path', None)
+                )
+                
+                if frame_path and os.path.exists(frame_path):
+                    # Get timestamp from frame data
+                    timestamp = (
+                        frame_data.timestamp if hasattr(frame_data, 'timestamp')
+                        else getattr(frame_data, 'timestamp', 0.0)
+                    )
+                    
                     # Run detection on this keyframe
                     detection_result = self.object_detector.detect_objects_in_frame(
-                        frame_data['frame_path'], 
-                        frame_data.get('timestamp', 0.0)
+                        frame_path, 
+                        timestamp
                     )
                     
                     # Process detected objects
                     if detection_result.detected_objects:
                         for obj in detection_result.detected_objects:
                             detection_data = {
-                                "frame_number": frame_data.get('frame_number', i),
+                                "frame_number": getattr(frame_data, 'frame_number', i),
                                 "class_name": str(obj.class_name),
                                 "confidence": float(obj.confidence),
                                 "bbox": [int(x) for x in obj.bbox[:4]],  # Convert to list of ints
@@ -333,22 +438,26 @@ class DatabaseIntegratedVideoService:
     def _generate_compressed_video(self, video_path: str, video_id: str) -> Optional[str]:
         """Generate compressed version of video and upload to MinIO"""
         try:
-            # This is a placeholder - implement actual video compression
-            # For now, just copy the original file as compressed
-            compressed_minio_path = f"videos/compressed/{video_id}.mp4"
+            # Use compression service to compress and store video
+            result = self.compression_service.compress_and_store(video_path, video_id)
             
-            with open(video_path, 'rb') as file_data:
-                file_info = os.stat(video_path)
-                self.db_manager.minio_client.put_object(
-                    self.db_manager.config.minio_bucket,
-                    compressed_minio_path,
-                    file_data,
-                    length=file_info.st_size,
-                    content_type='video/mp4'
-                )
-            
-            logger.info(f"✅ Compressed video uploaded: {compressed_minio_path}")
-            return compressed_minio_path
+            if result and result.get('success'):
+                compression_info = {
+                    'original_size_bytes': result['original_size'],
+                    'compressed_size_bytes': result['compressed_size'],
+                    'compression_ratio': result['compression_ratio'],
+                    'output_resolution': result['output_resolution']
+                }
+                
+                # Update video metadata with compression info
+                self.video_repo.update_metadata(video_id, {
+                    'compression_info': compression_info
+                })
+                
+                return result['minio_path']
+            else:
+                logger.error("Video compression failed")
+                return None
             
         except Exception as e:
             logger.error(f"❌ Failed to generate compressed video: {e}")
@@ -364,10 +473,15 @@ class DatabaseIntegratedVideoService:
             # Remove temporary keyframe files
             for keyframe in keyframes:
                 frame_data = keyframe.frame_data if hasattr(keyframe, 'frame_data') else keyframe
-                if 'frame_path' in frame_data:
-                    frame_path = frame_data['frame_path']
-                    if os.path.exists(frame_path):
-                        os.remove(frame_path)
+                
+                # Get frame path depending on structure
+                frame_path = (
+                    frame_data.frame_path if hasattr(frame_data, 'frame_path')
+                    else getattr(frame_data, 'path', None)
+                )
+                
+                if frame_path and os.path.exists(frame_path):
+                    os.remove(frame_path)
             
             logger.info("✅ Temporary files cleaned up")
             
@@ -377,12 +491,12 @@ class DatabaseIntegratedVideoService:
     def get_video_status(self, video_id: str) -> Dict:
         """Get processing status for a video"""
         video = self.video_repo.get_video_by_id(video_id)
-        
+
         if not video:
             return {"error": "Video not found"}
-        
+
         meta_data = video.get("meta_data", {})
-        
+
         status_data = {
             "video_id": video_id,
             "status": meta_data.get("processing_status", "unknown"),
@@ -398,17 +512,77 @@ class DatabaseIntegratedVideoService:
             "processing_progress": meta_data.get("processing_progress", 0),
             "processing_message": meta_data.get("processing_message", "")
         }
-        
+
+        # Add presigned URLs for accessing content
+        try:
+            # Original video URL
+            minio_original_path = meta_data.get("minio_original_path")
+            if minio_original_path:
+                status_data["original_video_url"] = self.video_repo.get_video_presigned_url(minio_original_path)
+
+            # Compressed video URL (if available)
+            minio_compressed_path = meta_data.get("minio_compressed_path")
+            if minio_compressed_path:
+                status_data["compressed_video_url"] = self.video_repo.get_compressed_video_presigned_url(video_id)
+
+            # Keyframes URLs (if available)
+            if meta_data.get("keyframe_count", 0) > 0:
+                keyframes_urls = self.keyframe_repo.get_video_keyframes_presigned_urls(video_id)
+                status_data["keyframes_urls"] = keyframes_urls
+
+        except Exception as e:
+            logger.warning(f"Failed to generate presigned URLs for video {video_id}: {e}")
+
         return status_data
     
+    def get_video_keyframes(self, video_id: str, filter_detections: bool = False, limit: int = None) -> Dict:
+        """Get keyframes for a video with optional filtering and presigned URLs"""
+        try:
+            # Get video record to check if it exists
+            video = self.video_repo.get_video_by_id(video_id)
+            if not video:
+                return {"error": "Video not found"}
+
+            # Get keyframes with presigned URLs from keyframe repository
+            keyframes_urls = self.keyframe_repo.get_video_keyframes_presigned_urls(video_id)
+
+            # Apply filtering if requested
+            if filter_detections:
+                # For now, return all keyframes since we don't have detection metadata stored
+                # In a future enhancement, we could store detection results per keyframe
+                filtered_keyframes = keyframes_urls
+            else:
+                filtered_keyframes = keyframes_urls
+
+            # Apply limit if specified
+            if limit and limit > 0:
+                filtered_keyframes = filtered_keyframes[:limit]
+
+            # Get video metadata for additional context
+            meta_data = video.get("meta_data", {})
+            keyframe_count = meta_data.get("keyframe_count", 0)
+
+            return {
+                "video_id": video_id,
+                "keyframes": filtered_keyframes,
+                "total_keyframes": len(filtered_keyframes),
+                "filter_applied": filter_detections,
+                "limit_applied": limit if limit and limit > 0 else None,
+                "keyframe_count": keyframe_count
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get keyframes for video {video_id}: {e}")
+            return {"error": str(e)}
+
     def get_video_events(self, video_id: str, event_type: str = None) -> Dict:
         """Get events for a video"""
         events = self.event_repo.get_events_by_video_id(video_id)
-        
+
         # Filter by event type if specified
         if event_type:
             events = [e for e in events if e.get("event_type") == event_type]
-        
+
         return {
             "video_id": video_id,
             "events": events,
@@ -545,7 +719,8 @@ class DatabaseIntegratedVideoService:
                     try:
                         # EventRepository.save_event expects event dict with proper structure
                         # It will handle timestamp conversion and field mapping
-                        self.event_repo.save_event(video_id, event)
+                        event['video_id'] = video_id  # Add video_id to event data
+                        self.event_repo.save_event(event)
                     except Exception as e:
                         logger.error(f"Failed to save event: {e}")
                 

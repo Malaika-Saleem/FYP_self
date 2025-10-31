@@ -7,13 +7,24 @@ export async function GET(
   try {
     const videoId = params.videoId
     
-    // Forward request to Flask backend for keyframes list
-    const response = await fetch(`http://localhost:5000/api/video/${videoId}/keyframes`, {
+    // Forward request to Flask backend for keyframes list - try v2 endpoint first, fallback to legacy
+    let response = await fetch(`http://localhost:5000/api/v2/video/keyframes/${videoId}`, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
       },
     })
+
+    // If v2 endpoint fails, try legacy endpoint
+    if (!response.ok) {
+      console.log('v2 keyframes endpoint failed, trying legacy endpoint')
+      response = await fetch(`http://localhost:5000/api/video/keyframes/${videoId}`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      })
+    }
 
     if (!response.ok) {
       const errorData = await response.json()

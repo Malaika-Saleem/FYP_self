@@ -19,7 +19,7 @@ export async function POST(request: NextRequest) {
     flaskFormData.append('video', video)
     flaskFormData.append('config_type', configType)
 
-    const response = await fetch(`${FLASK_API_URL}/api/upload`, {
+    const response = await fetch(`${FLASK_API_URL}/api/v2/video/upload`, {
       method: 'POST',
       body: flaskFormData,
     })
