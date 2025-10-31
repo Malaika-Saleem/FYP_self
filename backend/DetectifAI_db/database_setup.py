@@ -8,6 +8,7 @@ MONGO_URI = os.getenv("MONGO_URI")
 client = MongoClient(MONGO_URI)
 db = client.get_default_database()
 
+
 def create_collection_if_not_exists(name, validator=None, indexes=None):
     """Create collection if it doesn't exist, otherwise skip"""
     try:
@@ -15,14 +16,14 @@ def create_collection_if_not_exists(name, validator=None, indexes=None):
             db.create_collection(name, validator=validator)
         else:
             db.create_collection(name)
-        print(f"✅ Created collection: {name}")
+        print(f"Created collection: {name}")
     except Exception as e:
         if "already exists" in str(e):
-            print(f"⚠️  Collection {name} already exists, skipping...")
+            print(f"Collection {name} already exists, skipping...")
         else:
-            print(f"❌ Error creating collection {name}: {e}")
+            print(f"Error creating collection {name}: {e}")
             return False
-    
+
     # Create indexes if specified
     if indexes:
         for index in indexes:
@@ -33,13 +34,14 @@ def create_collection_if_not_exists(name, validator=None, indexes=None):
                 else:
                     # Simple index
                     db[name].create_index(index)
-                print(f"  📊 Created index on {name}")
+                print(f"  Created index on {name}")
             except Exception as e:
                 if "already exists" in str(e) or "duplicate key" in str(e):
-                    print(f"  ⚠️  Index on {name} already exists")
+                    print(f"  Index on {name} already exists")
                 else:
-                    print(f"  ❌ Error creating index on {name}: {e}")
+                    print(f"  Error creating index on {name}: {e}")
     return True
+
 
 # === ADMIN ===
 create_collection_if_not_exists("admin", validator={
@@ -59,17 +61,20 @@ create_collection_if_not_exists("admin", validator={
     }
 }, indexes=[([("email", ASCENDING)], {"unique": True}), "username"])
 
-# === USER ===
-create_collection_if_not_exists("user", validator={
+
+# === USERS ===
+create_collection_if_not_exists("users", validator={
     "$jsonSchema": {
         "bsonType": "object",
-        "required": ["user_id", "username", "email", "password"],
+        "required": ["user_id", "email"],
         "properties": {
             "user_id": {"bsonType": "string"},
             "username": {"bsonType": "string"},
             "email": {"bsonType": "string"},
-            "password": {"bsonType": "string"},
+            "password_hash": {"bsonType": "string"},
             "role": {"bsonType": "string"},
+            "profile_data": {"bsonType": "object"},
+            "is_active": {"bsonType": "bool"},
             "created_at": {"bsonType": "date"},
             "updated_at": {"bsonType": "date"},
             "last_login": {"bsonType": ["date", "null"]}
@@ -77,8 +82,9 @@ create_collection_if_not_exists("user", validator={
     }
 }, indexes=[([("email", ASCENDING)], {"unique": True}), "username"])
 
-# === VIDEO FILE ===
-create_collection_if_not_exists("video_file", validator={
+
+# === VIDEO FILES ===
+create_collection_if_not_exists("video_files", validator={
     "$jsonSchema": {
         "bsonType": "object",
         "required": ["video_id", "user_id", "file_path"],
@@ -98,8 +104,9 @@ create_collection_if_not_exists("video_file", validator={
     }
 }, indexes=["user_id", "upload_date"])
 
-# === EVENT ===
-create_collection_if_not_exists("event", validator={
+
+# === EVENTS ===
+create_collection_if_not_exists("events", validator={
     "$jsonSchema": {
         "bsonType": "object",
         "required": ["event_id", "video_id", "start_timestamp_ms", "end_timestamp_ms"],
@@ -120,8 +127,9 @@ create_collection_if_not_exists("event", validator={
     }
 }, indexes=["video_id", "event_type", "is_verified"])
 
-# === EVENT CLIP ===
-create_collection_if_not_exists("event_clip", validator={
+
+# === EVENT CLIPS ===
+create_collection_if_not_exists("event_clips", validator={
     "$jsonSchema": {
         "bsonType": "object",
         "required": ["clip_id", "event_id", "clip_path"],
@@ -138,6 +146,7 @@ create_collection_if_not_exists("event_clip", validator={
         }
     }
 }, indexes=["event_id"])
+
 
 # === DETECTED FACES ===
 create_collection_if_not_exists("detected_faces", validator={
@@ -158,6 +167,7 @@ create_collection_if_not_exists("detected_faces", validator={
     }
 }, indexes=["event_id", "detected_at"])
 
+
 # === FACE MATCHES ===
 create_collection_if_not_exists("face_matches", validator={
     "$jsonSchema": {
@@ -173,8 +183,9 @@ create_collection_if_not_exists("face_matches", validator={
     }
 }, indexes=["face_id_1", "face_id_2", "similarity_score"])
 
-# === EVENT DESCRIPTION ===
-create_collection_if_not_exists("event_description", validator={
+
+# === EVENT DESCRIPTIONS ===
+create_collection_if_not_exists("event_descriptions", validator={
     "$jsonSchema": {
         "bsonType": "object",
         "required": ["description_id", "event_id", "text_embedding"],
@@ -190,8 +201,9 @@ create_collection_if_not_exists("event_description", validator={
     }
 }, indexes=["event_id", "created_at"])
 
-# === EVENT CAPTION ===
-create_collection_if_not_exists("event_caption", validator={
+
+# === EVENT CAPTIONS ===
+create_collection_if_not_exists("event_captions", validator={
     "$jsonSchema": {
         "bsonType": "object",
         "required": ["description_id", "description"],
@@ -201,6 +213,7 @@ create_collection_if_not_exists("event_caption", validator={
         }
     }
 }, indexes=["description_id"])
+
 
 # === QUERY ===
 create_collection_if_not_exists("query", validator={
@@ -216,6 +229,7 @@ create_collection_if_not_exists("query", validator={
         }
     }
 }, indexes=["user_id", "executed_at"])
+
 
 # === QUERY RESULT ===
 create_collection_if_not_exists("query_result", validator={
@@ -233,8 +247,9 @@ create_collection_if_not_exists("query_result", validator={
     }
 }, indexes=["query_id", "event_id", "relevance_score"])
 
-# === SUBSCRIPTION PLAN ===
-create_collection_if_not_exists("subscription_plan", validator={
+
+# === SUBSCRIPTION PLANS ===
+create_collection_if_not_exists("subscription_plans", validator={
     "$jsonSchema": {
         "bsonType": "object",
         "required": ["plan_id", "plan_name", "price"],
@@ -250,8 +265,9 @@ create_collection_if_not_exists("subscription_plan", validator={
     }
 }, indexes=[([("plan_id", ASCENDING)], {"unique": True}), "is_active"])
 
-# === USER SUBSCRIPTION ===
-create_collection_if_not_exists("user_subscription", validator={
+
+# === USER SUBSCRIPTIONS ===
+create_collection_if_not_exists("user_subscriptions", validator={
     "$jsonSchema": {
         "bsonType": "object",
         "required": ["subscription_id", "user_id", "plan_id"],
@@ -265,5 +281,28 @@ create_collection_if_not_exists("user_subscription", validator={
     }
 }, indexes=["user_id", "plan_id", "start_date"])
 
-print("\n🎉 Database schema setup completed successfully!")
-print("📊 All collections are ready with validation and indexes.")
+
+# === USER SESSIONS ===
+create_collection_if_not_exists("user_sessions", validator={
+    "$jsonSchema": {
+        "bsonType": "object",
+        "required": ["session_id", "user_id", "session_token", "expires_at"],
+        "properties": {
+            "session_id": {"bsonType": "string"},
+            "user_id": {"bsonType": "string"},
+            "session_token": {"bsonType": "string"},
+            "expires_at": {"bsonType": "date"},
+            "ip_address": {"bsonType": "string"},
+            "user_agent": {"bsonType": "string"},
+            "created_at": {"bsonType": "date"}
+        }
+    }
+}, indexes=[
+    ([("session_token", ASCENDING)], {"unique": True}),
+    "user_id",
+    "expires_at"
+])
+
+
+print("\nDatabase schema setup completed successfully.")
+print("All collections are ready with validation and indexes.")

@@ -8,7 +8,7 @@ minio==7.1.11
 opencv-python==4.8.0.74
 python-dotenv==1.0.0
 faiss-cpu
-numpy
+numpy<2
 Pillow
 scikit-learn
 ultralytics
@@ -19,3 +19,4 @@ torchvision
 matplotlib
 tqdm
 scikit-image
+imagehash

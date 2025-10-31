@@ -8,11 +8,11 @@ load_dotenv()
 
 client = MongoClient(os.getenv("MONGO_URI", "mongodb://localhost:27017/detectifai"))
 db = client.get_default_database()
-users = db.user
-video_files = db.video_file
-event_descriptions = db.event_description
-subscription_plans = db.subscription_plan
-events = db.event
+users = db.users
+video_files = db.video_files
+event_descriptions = db.event_descriptions
+subscription_plans = db.subscription_plans
+events = db.events
 
 # Add sample user if not exists
 sample_user = {
