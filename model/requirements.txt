@@ -7,3 +7,6 @@ scikit-learn
 joblib
 pillow
 tqdm
+faiss-cpu
+faiss-gpu
+pymongo
