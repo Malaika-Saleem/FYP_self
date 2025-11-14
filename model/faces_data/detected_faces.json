@@ -1,0 +1,546 @@
+[
+  {
+    "face_id": "face_n000228_event_001_000005_00",
+    "person_name": "n000228",
+    "confidence": 0.5810490777574007,
+    "similarity": 0.0,
+    "image_path": "faces\\face_n000228_event_001_000005_00.jpg",
+    "timestamp": "2025-11-13T11:59:12.765906"
+  },
+  {
+    "face_id": "face_unknown_event_001_000005_01",
+    "person_name": null,
+    "confidence": 0.1950019252940892,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000005_01.jpg",
+    "timestamp": "2025-11-13T11:59:12.838359"
+  },
+  {
+    "face_id": "face_unknown_event_001_000005_02",
+    "person_name": null,
+    "confidence": 0.30611367931018485,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000005_02.jpg",
+    "timestamp": "2025-11-13T11:59:12.920240"
+  },
+  {
+    "face_id": "face_unknown_event_001_000005_03",
+    "person_name": null,
+    "confidence": 0.37704718138214816,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000005_03.jpg",
+    "timestamp": "2025-11-13T11:59:13.007793"
+  },
+  {
+    "face_id": "face_unknown_event_001_000005_04",
+    "person_name": null,
+    "confidence": 0.24786660855421333,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000005_04.jpg",
+    "timestamp": "2025-11-13T11:59:13.092988"
+  },
+  {
+    "face_id": "face_unknown_event_001_000005_05",
+    "person_name": null,
+    "confidence": 0.4345178530330673,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000005_05.jpg",
+    "timestamp": "2025-11-13T11:59:13.168447"
+  },
+  {
+    "face_id": "face_n000203_event_001_000005_06",
+    "person_name": "n000203",
+    "confidence": 0.5269767302244333,
+    "similarity": 0.0,
+    "image_path": "faces\\face_n000203_event_001_000005_06.jpg",
+    "timestamp": "2025-11-13T11:59:13.248822"
+  },
+  {
+    "face_id": "face_unknown_event_001_000005_07",
+    "person_name": null,
+    "confidence": 0.18991714913518326,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000005_07.jpg",
+    "timestamp": "2025-11-13T11:59:13.339231"
+  },
+  {
+    "face_id": "face_unknown_event_001_000005_08",
+    "person_name": null,
+    "confidence": 0.24464385717268758,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000005_08.jpg",
+    "timestamp": "2025-11-13T11:59:13.409075"
+  },
+  {
+    "face_id": "face_unknown_event_001_000010_00",
+    "person_name": null,
+    "confidence": 0.29264062662371204,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000010_00.jpg",
+    "timestamp": "2025-11-13T11:59:14.168185"
+  },
+  {
+    "face_id": "face_unknown_event_001_000010_03",
+    "person_name": null,
+    "confidence": 0.24141701550196032,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000010_03.jpg",
+    "timestamp": "2025-11-13T11:59:14.361024"
+  },
+  {
+    "face_id": "face_unknown_event_001_000015_04",
+    "person_name": null,
+    "confidence": 0.22463432575096084,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000015_04.jpg",
+    "timestamp": "2025-11-13T11:59:15.616099"
+  },
+  {
+    "face_id": "face_unknown_event_001_000020_06",
+    "person_name": null,
+    "confidence": 0.28573196905763004,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000020_06.jpg",
+    "timestamp": "2025-11-13T11:59:17.002326"
+  },
+  {
+    "face_id": "face_unknown_event_001_000020_07",
+    "person_name": null,
+    "confidence": 0.2439235836748336,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000020_07.jpg",
+    "timestamp": "2025-11-13T11:59:17.088769"
+  },
+  {
+    "face_id": "face_unknown_event_001_000020_08",
+    "person_name": null,
+    "confidence": 0.3370837276211933,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000020_08.jpg",
+    "timestamp": "2025-11-13T11:59:17.154872"
+  },
+  {
+    "face_id": "face_unknown_event_001_000020_10",
+    "person_name": null,
+    "confidence": 0.2020922044667777,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000020_10.jpg",
+    "timestamp": "2025-11-13T11:59:17.314070"
+  },
+  {
+    "face_id": "face_unknown_event_001_000025_01",
+    "person_name": null,
+    "confidence": 0.3344309525013735,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000025_01.jpg",
+    "timestamp": "2025-11-13T11:59:18.162623"
+  },
+  {
+    "face_id": "face_n000203_event_001_000025_03",
+    "person_name": "n000203",
+    "confidence": 0.6258347805003242,
+    "similarity": 0.0,
+    "image_path": "faces\\face_n000203_event_001_000025_03.jpg",
+    "timestamp": "2025-11-13T11:59:18.302079"
+  },
+  {
+    "face_id": "face_unknown_event_001_000025_07",
+    "person_name": null,
+    "confidence": 0.43299007494122493,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000025_07.jpg",
+    "timestamp": "2025-11-13T11:59:18.530492"
+  },
+  {
+    "face_id": "face_n000202_event_001_000030_02",
+    "person_name": "n000202",
+    "confidence": 0.7058903570025247,
+    "similarity": 0.0,
+    "image_path": "faces\\face_n000202_event_001_000030_02.jpg",
+    "timestamp": "2025-11-13T11:59:19.748878"
+  },
+  {
+    "face_id": "face_unknown_event_001_000030_05",
+    "person_name": null,
+    "confidence": 0.3751211156839105,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000030_05.jpg",
+    "timestamp": "2025-11-13T11:59:19.971926"
+  },
+  {
+    "face_id": "face_unknown_event_001_000060_04",
+    "person_name": null,
+    "confidence": 0.23391729015351226,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000060_04.jpg",
+    "timestamp": "2025-11-13T11:59:31.222172"
+  },
+  {
+    "face_id": "face_unknown_event_001_000060_10",
+    "person_name": null,
+    "confidence": 0.30502084836555643,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000060_10.jpg",
+    "timestamp": "2025-11-13T11:59:31.621304"
+  },
+  {
+    "face_id": "face_unknown_event_001_000065_05",
+    "person_name": null,
+    "confidence": 0.2441051296132515,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000065_05.jpg",
+    "timestamp": "2025-11-13T11:59:32.692799"
+  },
+  {
+    "face_id": "face_unknown_event_001_000065_09",
+    "person_name": null,
+    "confidence": 0.4471356352084385,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000065_09.jpg",
+    "timestamp": "2025-11-13T11:59:32.966231"
+  },
+  {
+    "face_id": "face_unknown_event_001_000075_04",
+    "person_name": null,
+    "confidence": 0.4131273804604841,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000075_04.jpg",
+    "timestamp": "2025-11-13T11:59:35.458900"
+  },
+  {
+    "face_id": "face_unknown_event_001_000075_06",
+    "person_name": null,
+    "confidence": 0.11008248340124434,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000075_06.jpg",
+    "timestamp": "2025-11-13T11:59:35.627086"
+  },
+  {
+    "face_id": "face_unknown_event_001_000075_07",
+    "person_name": null,
+    "confidence": 0.23319622103898732,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000075_07.jpg",
+    "timestamp": "2025-11-13T11:59:35.732644"
+  },
+  {
+    "face_id": "face_n000302_event_001_000075_08",
+    "person_name": "n000302",
+    "confidence": 0.8168096749562122,
+    "similarity": 0.0,
+    "image_path": "faces\\face_n000302_event_001_000075_08.jpg",
+    "timestamp": "2025-11-13T11:59:35.797555"
+  },
+  {
+    "face_id": "face_unknown_event_001_000075_09",
+    "person_name": null,
+    "confidence": 0.14133017181477328,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000075_09.jpg",
+    "timestamp": "2025-11-13T11:59:35.884929"
+  },
+  {
+    "face_id": "face_unknown_event_001_000080_03",
+    "person_name": null,
+    "confidence": 0.1903059952484074,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000080_03.jpg",
+    "timestamp": "2025-11-13T11:59:37.073327"
+  },
+  {
+    "face_id": "face_unknown_event_001_000080_06",
+    "person_name": null,
+    "confidence": 0.43274408875498593,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000080_06.jpg",
+    "timestamp": "2025-11-13T11:59:37.298685"
+  },
+  {
+    "face_id": "face_unknown_event_001_000090_05",
+    "person_name": null,
+    "confidence": 0.4749309030620825,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000090_05.jpg",
+    "timestamp": "2025-11-13T11:59:39.737199"
+  },
+  {
+    "face_id": "face_unknown_event_001_000095_00",
+    "person_name": null,
+    "confidence": 0.16883797446208165,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000095_00.jpg",
+    "timestamp": "2025-11-13T11:59:40.634609"
+  },
+  {
+    "face_id": "face_unknown_event_001_000100_07",
+    "person_name": null,
+    "confidence": 0.3082889742020363,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000100_07.jpg",
+    "timestamp": "2025-11-13T11:59:42.279669"
+  },
+  {
+    "face_id": "face_unknown_event_001_000120_01",
+    "person_name": null,
+    "confidence": 0.29280963432713947,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000120_01.jpg",
+    "timestamp": "2025-11-13T11:59:45.937583"
+  },
+  {
+    "face_id": "face_unknown_event_001_000120_05",
+    "person_name": null,
+    "confidence": 0.30311982883920374,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000120_05.jpg",
+    "timestamp": "2025-11-13T11:59:46.167369"
+  },
+  {
+    "face_id": "face_unknown_event_001_000140_01",
+    "person_name": null,
+    "confidence": 0.18822783548290742,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000140_01.jpg",
+    "timestamp": "2025-11-13T11:59:49.650734"
+  },
+  {
+    "face_id": "face_unknown_event_001_000150_04",
+    "person_name": null,
+    "confidence": 0.3225101761553706,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000150_04.jpg",
+    "timestamp": "2025-11-13T11:59:51.702382"
+  },
+  {
+    "face_id": "face_unknown_event_001_000170_02",
+    "person_name": null,
+    "confidence": 0.0888546272238775,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000170_02.jpg",
+    "timestamp": "2025-11-13T11:59:54.866498"
+  },
+  {
+    "face_id": "face_n000203_event_001_000180_01",
+    "person_name": "n000203",
+    "confidence": 0.7079153860674094,
+    "similarity": 0.0,
+    "image_path": "faces\\face_n000203_event_001_000180_01.jpg",
+    "timestamp": "2025-11-13T11:59:56.372761"
+  },
+  {
+    "face_id": "face_unknown_event_001_000180_03",
+    "person_name": null,
+    "confidence": 0.18091440491829877,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000180_03.jpg",
+    "timestamp": "2025-11-13T11:59:56.512526"
+  },
+  {
+    "face_id": "face_unknown_event_001_000195_02",
+    "person_name": null,
+    "confidence": 0.3404108866464503,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000195_02.jpg",
+    "timestamp": "2025-11-13T11:59:59.129479"
+  },
+  {
+    "face_id": "face_n000266_event_001_000205_03",
+    "person_name": "n000266",
+    "confidence": 0.5946829153017736,
+    "similarity": 0.0,
+    "image_path": "faces\\face_n000266_event_001_000205_03.jpg",
+    "timestamp": "2025-11-13T12:00:00.808465"
+  },
+  {
+    "face_id": "face_unknown_event_001_000210_02",
+    "person_name": null,
+    "confidence": 0.15268567166045588,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000210_02.jpg",
+    "timestamp": "2025-11-13T12:00:01.615094"
+  },
+  {
+    "face_id": "face_n000302_event_001_000230_02",
+    "person_name": "n000302",
+    "confidence": 0.5172119883783592,
+    "similarity": 0.0,
+    "image_path": "faces\\face_n000302_event_001_000230_02.jpg",
+    "timestamp": "2025-11-13T12:00:04.788159"
+  },
+  {
+    "face_id": "face_unknown_event_001_000235_03",
+    "person_name": null,
+    "confidence": 0.3230907721537923,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000235_03.jpg",
+    "timestamp": "2025-11-13T12:00:05.819960"
+  },
+  {
+    "face_id": "face_unknown_event_001_000240_04",
+    "person_name": null,
+    "confidence": 0.31760461578921545,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000240_04.jpg",
+    "timestamp": "2025-11-13T12:00:06.771843"
+  },
+  {
+    "face_id": "face_unknown_event_001_000250_00",
+    "person_name": null,
+    "confidence": 0.17198038860310425,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000250_00.jpg",
+    "timestamp": "2025-11-13T12:00:08.133459"
+  },
+  {
+    "face_id": "face_unknown_event_001_000265_02",
+    "person_name": null,
+    "confidence": 0.32316926970016624,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000265_02.jpg",
+    "timestamp": "2025-11-13T12:00:10.273783"
+  },
+  {
+    "face_id": "face_unknown_event_001_000265_03",
+    "person_name": null,
+    "confidence": 0.24013159359358788,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000265_03.jpg",
+    "timestamp": "2025-11-13T12:00:10.341406"
+  },
+  {
+    "face_id": "face_unknown_event_001_000280_01",
+    "person_name": null,
+    "confidence": 0.4271071609271754,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000280_01.jpg",
+    "timestamp": "2025-11-13T12:00:12.698199"
+  },
+  {
+    "face_id": "face_unknown_event_001_000285_01",
+    "person_name": null,
+    "confidence": 0.2726132910034569,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000285_01.jpg",
+    "timestamp": "2025-11-13T12:00:13.453722"
+  },
+  {
+    "face_id": "face_unknown_event_001_000295_02",
+    "person_name": null,
+    "confidence": 0.306203258576636,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000295_02.jpg",
+    "timestamp": "2025-11-13T12:00:15.092290"
+  },
+  {
+    "face_id": "face_unknown_event_001_000295_04",
+    "person_name": null,
+    "confidence": 0.24154704359399287,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000295_04.jpg",
+    "timestamp": "2025-11-13T12:00:15.238362"
+  },
+  {
+    "face_id": "face_n000203_event_001_000305_00",
+    "person_name": "n000203",
+    "confidence": 0.597969494026161,
+    "similarity": 0.0,
+    "image_path": "faces\\face_n000203_event_001_000305_00.jpg",
+    "timestamp": "2025-11-13T12:00:16.946229"
+  },
+  {
+    "face_id": "face_unknown_event_001_000305_05",
+    "person_name": null,
+    "confidence": 0.15937765138291632,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000305_05.jpg",
+    "timestamp": "2025-11-13T12:00:17.236726"
+  },
+  {
+    "face_id": "face_unknown_event_001_000340_04",
+    "person_name": null,
+    "confidence": 0.41061810743652044,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000340_04.jpg",
+    "timestamp": "2025-11-13T12:00:24.254436"
+  },
+  {
+    "face_id": "face_unknown_event_001_000370_02",
+    "person_name": null,
+    "confidence": 0.22716635152646203,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000370_02.jpg",
+    "timestamp": "2025-11-13T12:00:29.881102"
+  },
+  {
+    "face_id": "face_unknown_event_001_000385_02",
+    "person_name": null,
+    "confidence": 0.39115371571645574,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000385_02.jpg",
+    "timestamp": "2025-11-13T12:00:32.908718"
+  },
+  {
+    "face_id": "face_n000185_event_001_000390_01",
+    "person_name": "n000185",
+    "confidence": 0.5328916872858142,
+    "similarity": 0.0,
+    "image_path": "faces\\face_n000185_event_001_000390_01.jpg",
+    "timestamp": "2025-11-13T12:00:33.891324"
+  },
+  {
+    "face_id": "face_unknown_event_001_000390_02",
+    "person_name": null,
+    "confidence": 0.3668314173027034,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000390_02.jpg",
+    "timestamp": "2025-11-13T12:00:33.976824"
+  },
+  {
+    "face_id": "face_unknown_event_001_000395_01",
+    "person_name": null,
+    "confidence": 0.2446203020519961,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000395_01.jpg",
+    "timestamp": "2025-11-13T12:00:35.040359"
+  },
+  {
+    "face_id": "face_n000255_event_001_000400_01",
+    "person_name": "n000255",
+    "confidence": 0.5540141033646607,
+    "similarity": 0.0,
+    "image_path": "faces\\face_n000255_event_001_000400_01.jpg",
+    "timestamp": "2025-11-13T12:00:36.065281"
+  },
+  {
+    "face_id": "face_unknown_event_001_000405_00",
+    "person_name": null,
+    "confidence": 0.4449626404919844,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000405_00.jpg",
+    "timestamp": "2025-11-13T12:00:37.033892"
+  },
+  {
+    "face_id": "face_unknown_event_001_000405_01",
+    "person_name": null,
+    "confidence": 0.4749349515561485,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000405_01.jpg",
+    "timestamp": "2025-11-13T12:00:37.098425"
+  },
+  {
+    "face_id": "face_unknown_event_001_000405_02",
+    "person_name": null,
+    "confidence": 0.2581131685751107,
+    "similarity": 0.0,
+    "image_path": "faces\\face_unknown_event_001_000405_02.jpg",
+    "timestamp": "2025-11-13T12:00:37.186831"
+  },
+  {
+    "face_id": "face_n000163_event_001_000445_00",
+    "person_name": "n000163",
+    "confidence": 0.7299818346439255,
+    "similarity": 0.0,
+    "image_path": "faces\\face_n000163_event_001_000445_00.jpg",
+    "timestamp": "2025-11-13T12:00:43.842112"
+  }
+]
