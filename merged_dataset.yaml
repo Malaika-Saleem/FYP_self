@@ -1,0 +1,9 @@
+names:
+- fire
+- gun
+- knife
+nc: 3
+path: /kaggle/working/merged_dataset
+test: test/images
+train: train/images
+val: val/images
