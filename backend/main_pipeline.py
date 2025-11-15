@@ -19,15 +19,15 @@ from datetime import datetime
 import json
 
 # Import all components
-from backend.config import VideoProcessingConfig, get_security_focused_config, get_high_recall_config
-from backend.core.video_processing import OptimizedVideoProcessor
-from backend.event_aggregation import EventDetector, EventDeduplicationEngine
-from backend.video_segmentation import VideoSegmentationEngine
-from backend.highlight_reel import HighlightReelGenerator
-from backend.video_compression import VideoCompressor
-from backend.json_reports import ReportGenerator
-from backend.object_detection import ObjectDetectionIntegrator
-from backend.detectifai_events import DetectifAIEventType, ThreatLevel
+from config import VideoProcessingConfig, get_security_focused_config, get_high_recall_config
+from core.video_processing import OptimizedVideoProcessor
+from event_aggregation import EventDetector, EventDeduplicationEngine
+from video_segmentation import VideoSegmentationEngine
+from highlight_reel import HighlightReelGenerator
+from video_compression import VideoCompressor
+from json_reports import ReportGenerator
+from object_detection import ObjectDetectionIntegrator
+from detectifai_events import DetectifAIEventType, ThreatLevel
 
 # Set up logging
 logging.basicConfig(
