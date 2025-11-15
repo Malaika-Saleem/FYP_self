@@ -60,6 +60,11 @@ FAISS_INDEX_PATH = "model/faiss_face_index.bin"
 FAISS_ID_MAP_PATH = "model/faiss_id_map.json"
 EMBEDDING_DIM = 512  # InceptionResnetV1 produces 512-dim embeddings
 
+# Trained Models Configuration
+TRAINED_MODEL_DIR = "model/trained_models"
+CLASSIFIER_PATH = os.path.join(TRAINED_MODEL_DIR, "classifier_svm.pkl")
+ENCODER_PATH = os.path.join(TRAINED_MODEL_DIR, "label_encoder.pkl")
+
 # Simple fallback configuration
 SIMPLE_INDEX_PATH = "model/simple_face_index.json"
 
@@ -149,6 +154,42 @@ class AdvancedFaceEmbedder:
             face_tensor = face_tensor.to(self.device).unsqueeze(0)
             embedding = self.model(face_tensor).cpu().numpy().flatten()
         return embedding
+
+class PersonClassifier:
+    """Person identification using trained SVM classifier"""
+    
+    def __init__(self, classifier_path: str = CLASSIFIER_PATH, encoder_path: str = ENCODER_PATH,
+                 confidence_threshold: float = 0.5):
+        self.confidence_threshold = confidence_threshold
+        self.enabled = False
+        
+        if ADVANCED_AVAILABLE and os.path.exists(classifier_path) and os.path.exists(encoder_path):
+            try:
+                self.classifier = joblib.load(classifier_path)
+                self.label_encoder = joblib.load(encoder_path)
+                self.enabled = True
+                logger.info(f"[PersonClassifier] ✅ Model loaded, {len(self.label_encoder.classes_)} identities recognized.")
+            except Exception as e:
+                logger.warning(f"[PersonClassifier] ⚠️ Failed to load model: {e}")
+        else:
+            logger.info("[PersonClassifier] Trained models not available, using generic face tracking")
+    
+    def identify_person(self, embedding: np.ndarray) -> Tuple[Optional[str], float]:
+        """Identify person from face embedding using SVM classifier"""
+        if not self.enabled:
+            return None, 0.0
+        
+        try:
+            probs = self.classifier.predict_proba(embedding.reshape(1, -1))[0]
+            best_idx = np.argmax(probs)
+            conf = probs[best_idx]
+            
+            if conf >= self.confidence_threshold:
+                return self.label_encoder.classes_[best_idx], float(conf)
+            return None, float(conf)
+        except Exception as e:
+            logger.error(f"[PersonClassifier] Error: {e}")
+            return None, 0.0
 
 class FAISSFaceIndex:
     """FAISS index manager for fast similarity search"""
@@ -426,6 +467,7 @@ class FacialRecognitionIntegrated:
                 self.detector = AdvancedFaceDetector(self.device)
                 self.embedder = AdvancedFaceEmbedder(self.device)
                 self.face_index = FAISSFaceIndex()
+                self.person_classifier = PersonClassifier()  # Add trained SVM classifier
                 
                 # MongoDB storage (optional)
                 if MONGO_URI:
@@ -439,6 +481,7 @@ class FacialRecognitionIntegrated:
                 self.detector = SimpleFaceDetector()
                 self.embedder = SimpleFaceEmbedder()
                 self.face_index = SimpleFaceIndex()
+                self.person_classifier = None  # No classifier in simple mode
                 self.mongodb_storage = None
                 
         except Exception as e:
@@ -524,22 +567,33 @@ class FacialRecognitionIntegrated:
                 embedding = self.embedder.generate_embedding(face)
                 face_embeddings.append(embedding)
                 
-                # Search for similar faces
+                # Try person identification using trained classifier
+                person_name, person_confidence = None, 0.0
+                if self.person_classifier and self.person_classifier.enabled:
+                    person_name, person_confidence = self.person_classifier.identify_person(embedding)
+                
+                # Search for similar faces in FAISS index
                 matches = self.face_index.search(embedding, k=1, threshold=self.similarity_threshold)
                 
                 if matches:
                     # Found matching face
                     matched_face_id, similarity = matches[0]
                     detected_face_ids.append(matched_face_id)
-                    matched_persons.append(f"person_{matched_face_id}")
-                    self.detection_stats['face_matches_found'] += 1
-                    logger.info(f"👤 Face match found: {matched_face_id} (similarity: {similarity:.3f})")
-                else:
-                    # New face
-                    frame_number = int(timestamp * 30)  # Estimate frame number
-                    new_face_id = self._generate_face_id(frame_number, i, event_id=f"obj_detection_{int(timestamp)}")
                     
-                    # Add to index
+                    if person_name:
+                        matched_persons.append(f"{person_name} (confidence: {person_confidence:.2f})")
+                        logger.info(f"👤 Known person identified: {person_name} (confidence: {person_confidence:.2f}, face similarity: {similarity:.3f})")
+                    else:
+                        matched_persons.append(f"person_{matched_face_id}")
+                        logger.info(f"👤 Face match found: {matched_face_id} (similarity: {similarity:.3f})")
+                    
+                    self.detection_stats['face_matches_found'] += 1
+                else:
+                    # New face - save to index
+                    frame_number = int(timestamp * 30)  # Estimate frame number
+                    new_face_id = self._generate_face_id(frame_number, i, person_name, event_id=f"obj_detection_{int(timestamp)}")
+                    
+                    # Add to FAISS index
                     self.face_index.add_embedding(new_face_id, embedding)
                     
                     # Save face image
@@ -552,15 +606,23 @@ class FacialRecognitionIntegrated:
                             'frame_path': frame_path,
                             'timestamp': timestamp,
                             'confidence': float(prob),
+                            'person_name': person_name,
+                            'person_confidence': float(person_confidence) if person_name else None,
                             'bounding_box': [int(x) for x in box],
                             'face_image_path': face_path
                         }
                         self.mongodb_storage.save_face(face_metadata)
                     
                     detected_face_ids.append(new_face_id)
-                    matched_persons.append(f"new_person_{new_face_id}")
+                    
+                    if person_name:
+                        matched_persons.append(f"{person_name} (NEW, confidence: {person_confidence:.2f})")
+                        logger.info(f"👤 NEW known person detected: {person_name} (confidence: {person_confidence:.2f})")
+                    else:
+                        matched_persons.append(f"new_unknown_person_{new_face_id}")
+                        logger.info(f"👤 NEW unknown face detected: {new_face_id}")
+                    
                     self.detection_stats['new_faces_added'] += 1
-                    logger.info(f"👤 New face detected: {new_face_id}")
             
             # Save face index
             self.face_index.save()
