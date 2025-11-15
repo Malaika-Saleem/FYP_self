@@ -39,6 +39,7 @@ try:
     import faiss
     from pymongo import MongoClient
     from dotenv import load_dotenv
+    import joblib
     ADVANCED_AVAILABLE = True
     load_dotenv()
 except ImportError:
@@ -719,6 +720,121 @@ class FacialRecognitionIntegrated:
         
         return reoccurrence_events
     
+    def search_person_by_image(self, image_path: str, k: int = 10, threshold: float = 0.6) -> List[Dict[str, Any]]:
+        """
+        Search for a person by uploading their image.
+        
+        Args:
+            image_path: Path to the uploaded image
+            k: Number of top matches to return
+            threshold: Similarity threshold for matches
+            
+        Returns:
+            List of matched persons with their occurrences
+        """
+        if not self.enabled:
+            logger.warning("[FacialRecognition] System not enabled")
+            return []
+        
+        try:
+            # Load the uploaded image
+            frame = cv2.imread(image_path)
+            if frame is None:
+                logger.error(f"Could not load image: {image_path}")
+                return []
+            
+            # Detect faces in the uploaded image
+            faces, boxes, probs = self.detector.detect_faces(frame)
+            
+            if not faces:
+                logger.info("No faces detected in uploaded image")
+                return []
+            
+            # Use the first detected face for search
+            query_face = faces[0]
+            query_embedding = self.embedder.generate_embedding(query_face)
+            
+            # Search for similar faces in the database
+            matches = self.face_index.search(query_embedding, k=k, threshold=threshold)
+            
+            if not matches:
+                logger.info("No similar faces found in database")
+                return []
+            
+            # Group matches by person/event and gather occurrence information
+            search_results = []
+            
+            for face_id, similarity in matches:
+                # Parse face_id to extract information
+                # face_id format: face_{person}_{event}_{frame}_{face_index}_{unique_id}
+                parts = face_id.split('_')
+                if len(parts) >= 6:
+                    person_part = parts[1] if parts[1] != 'unknown' else 'Unknown Person'
+                    event_part = '_'.join(parts[2:4])  # event_obj_detection or similar
+                    
+                    # Check if we have face image saved
+                    face_image_path = str(self.faces_dir / f"{face_id}.jpg")
+                    has_face_image = os.path.exists(face_image_path)
+                    
+                    # Try to get person identification from trained classifier
+                    person_name, person_confidence = None, 0.0
+                    if self.person_classifier and self.person_classifier.enabled:
+                        person_name, person_confidence = self.person_classifier.identify_person(query_embedding)
+                    
+                    result = {
+                        'face_id': face_id,
+                        'person_name': person_name if person_name else person_part.replace('_', ' ').title(),
+                        'person_confidence': person_confidence,
+                        'similarity_score': similarity,
+                        'event_context': event_part,
+                        'face_image_path': face_image_path if has_face_image else None,
+                        'timestamp': self._extract_timestamp_from_face_id(face_id),
+                        'detection_context': 'Suspicious Activity Detection'
+                    }
+                    search_results.append(result)
+                
+                else:
+                    # Fallback for differently formatted face_ids
+                    person_name, person_confidence = None, 0.0
+                    if self.person_classifier and self.person_classifier.enabled:
+                        person_name, person_confidence = self.person_classifier.identify_person(query_embedding)
+                    
+                    result = {
+                        'face_id': face_id,
+                        'person_name': person_name if person_name else 'Unknown Person',
+                        'person_confidence': person_confidence,
+                        'similarity_score': similarity,
+                        'event_context': 'security_event',
+                        'face_image_path': str(self.faces_dir / f"{face_id}.jpg") if os.path.exists(self.faces_dir / f"{face_id}.jpg") else None,
+                        'timestamp': 0.0,
+                        'detection_context': 'Security Event'
+                    }
+                    search_results.append(result)
+            
+            # Sort by similarity score (highest first)
+            search_results.sort(key=lambda x: x['similarity_score'], reverse=True)
+            
+            logger.info(f"👤 Image search complete: Found {len(search_results)} matches with similarity >= {threshold}")
+            
+            return search_results
+            
+        except Exception as e:
+            logger.error(f"[FacialRecognition] Error in image search: {e}")
+            return []
+    
+    def _extract_timestamp_from_face_id(self, face_id: str) -> float:
+        """Extract timestamp from face_id format"""
+        try:
+            parts = face_id.split('_')
+            if len(parts) >= 6:
+                # Try to extract from event part (e.g., event_obj_detection_123)
+                for part in parts:
+                    if part.isdigit():
+                        return float(part)
+            return 0.0
+        except:
+            return 0.0
+
     def get_detection_stats(self) -> Dict[str, Any]:
         """Get facial recognition detection statistics"""
         stats = self.detection_stats.copy()

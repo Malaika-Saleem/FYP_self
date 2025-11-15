@@ -18,6 +18,7 @@ import json
 from datetime import datetime
 import logging
 import uuid
+import time
 from typing import List, Dict, Any
 
 # Import DetectifAI components
@@ -1290,6 +1291,135 @@ def _assess_threat_level(events: List[Dict], detections: List[Dict]) -> Dict:
     assessment['risk_factors'] = risk_factors
     
     return assessment
+
+@app.route('/api/search/person-by-image', methods=['POST'])
+def search_person_by_image():
+    """
+    Search for a person by uploading their image.
+    Uses facial recognition to find similar faces in the database.
+    """
+    try:
+        # Check if image was uploaded
+        if 'image' not in request.files:
+            return jsonify({
+                'success': False,
+                'error': 'No image file provided'
+            }), 400
+        
+        file = request.files['image']
+        if file.filename == '':
+            return jsonify({
+                'success': False,
+                'error': 'No image file selected'
+            }), 400
+        
+        # Validate file type
+        if not file.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp')):
+            return jsonify({
+                'success': False,
+                'error': 'Invalid file type. Please upload an image file.'
+            }), 400
+        
+        # Save uploaded image temporarily
+        filename = secure_filename(f"search_{int(time.time())}_{file.filename}")
+        temp_path = os.path.join(UPLOAD_FOLDER, filename)
+        file.save(temp_path)
+        
+        try:
+            # Initialize facial recognition system
+            from facial_recognition import FacialRecognitionIntegrated
+            from config import VideoProcessingConfig
+            
+            config = VideoProcessingConfig()
+            config.enable_facial_recognition = True
+            
+            face_recognizer = FacialRecognitionIntegrated(config)
+            
+            if not face_recognizer.enabled:
+                return jsonify({
+                    'success': False,
+                    'error': 'Facial recognition system is not enabled or properly configured'
+                }), 500
+            
+            # Get search parameters from request
+            threshold = float(request.form.get('threshold', 0.6))
+            max_results = int(request.form.get('max_results', 10))
+            
+            # Perform image search
+            search_results = face_recognizer.search_person_by_image(
+                temp_path, 
+                k=max_results, 
+                threshold=threshold
+            )
+            
+            # Format results for frontend
+            formatted_results = []
+            for result in search_results:
+                formatted_result = {
+                    'id': result['face_id'],
+                    'person_name': result['person_name'],
+                    'confidence': round(result['similarity_score'], 3),
+                    'person_confidence': round(result['person_confidence'], 3) if result['person_confidence'] else 0.0,
+                    'timestamp': result['timestamp'],
+                    'event_context': result['event_context'],
+                    'detection_context': result['detection_context'],
+                    'thumbnail': f"/api/face-image/{result['face_id']}" if result['face_image_path'] else None,
+                    'description': f"{result['person_name']} detected in {result['detection_context'].lower()}",
+                    'zone': 'Security Zone',  # Placeholder
+                    'has_face_image': result['face_image_path'] is not None
+                }
+                formatted_results.append(formatted_result)
+            
+            # Get system statistics
+            stats = face_recognizer.get_detection_stats()
+            
+            response_data = {
+                'success': True,
+                'results': formatted_results,
+                'total_matches': len(formatted_results),
+                'search_parameters': {
+                    'similarity_threshold': threshold,
+                    'max_results': max_results
+                },
+                'system_stats': {
+                    'total_faces_in_database': stats.get('total_faces_in_database', 0),
+                    'implementation_mode': stats.get('implementation_mode', 'unknown')
+                },
+                'message': f"Found {len(formatted_results)} matches with similarity >= {threshold}"
+            }
+            
+            return jsonify(response_data)
+            
+        finally:
+            # Clean up temporary file
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+                
+    except Exception as e:
+        logger.error(f"Error in person image search: {e}")
+        return jsonify({
+            'success': False,
+            'error': f'Internal server error: {str(e)}'
+        }), 500
+
+@app.route('/api/face-image/<face_id>')
+def get_face_image(face_id):
+    """
+    Serve face images for the search results.
+    """
+    try:
+        # Construct face image path
+        face_image_path = os.path.join('model', 'faces', f"{face_id}.jpg")
+        
+        if not os.path.exists(face_image_path):
+            # Return a placeholder or 404
+            return jsonify({'error': 'Face image not found'}), 404
+        
+        return send_file(face_image_path, mimetype='image/jpeg')
+        
+    except Exception as e:
+        logger.error(f"Error serving face image {face_id}: {e}")
+        return jsonify({'error': 'Error serving face image'}), 500
 
 if __name__ == '__main__':
     logger.info("Starting DetectifAI Flask API server...")

@@ -18,6 +18,7 @@ export default function SearchPage() {
   const [searchResults, setSearchResults] = useState<any[]>([])
   const [isSearching, setIsSearching] = useState(false)
   const [showUploadModal, setShowUploadModal] = useState(false)
+  const [searchType, setSearchType] = useState<'text' | 'image'>('text')
 
   useEffect(() => {
     if (!isLoading && !user) {
@@ -72,6 +73,12 @@ export default function SearchPage() {
 
     setSearchResults(mockResults)
     setIsSearching(false)
+  }
+
+  const handleImageSearchResults = (results: any[]) => {
+    setSearchResults(results)
+    setSearchType('image')
+    setSearchQuery(`Image search - ${results.length} matches found`)
   }
 
   if (isLoading) {
@@ -134,7 +141,11 @@ export default function SearchPage() {
 
           {searchResults.length > 0 && <SearchResults results={searchResults} query={searchQuery} />}
 
-          <UploadImageModal isOpen={showUploadModal} onClose={() => setShowUploadModal(false)} />
+          <UploadImageModal 
+            isOpen={showUploadModal} 
+            onClose={() => setShowUploadModal(false)}
+            onSearchResults={handleImageSearchResults}
+          />
         </div>
       </main>
     </div>
