@@ -117,6 +117,7 @@ class VideoProcessingConfig:
     generate_html_gallery: bool = True
     generate_compressed_video: bool = True
     generate_segments: bool = True
+    generate_highlight_reels: bool = False  # Disabled for security focus - saves processing time
     
     # Video output format (mp4, avi, mov)
     video_output_format: str = "mp4"
@@ -133,17 +134,17 @@ class VideoProcessingConfig:
     # Enable object detection for context-aware processing
     enable_object_detection: bool = False
     
-    # Enable facial recognition for suspicious person tracking (disabled due to placeholder implementation)
-    enable_facial_recognition: bool = False
+    # Enable facial recognition for suspicious person tracking (FULL implementation with FAISS + MongoDB)
+    enable_facial_recognition: bool = True
     
     # Face recognition confidence threshold (0.5-0.95)
     face_recognition_confidence: float = 0.7
     
-    # Face detection model to use (placeholder - currently using simulation)
-    face_detection_model: str = "opencv_dnn"
+    # Face detection model to use (MTCNN for detection, FaceNet for embeddings)
+    face_detection_model: str = "mtcnn"
     
-    # Face recognition model to use (placeholder)
-    face_recognition_model: str = "facenet"
+    # Face recognition model to use (InceptionResnetV1 with FAISS similarity search)
+    face_recognition_model: str = "facenet_faiss"
     
     # Enable suspicious person database and tracking
     suspicious_person_tracking: bool = True
@@ -222,27 +223,7 @@ def get_balanced_config() -> VideoProcessingConfig:
     """Balanced configuration for general use"""
     return VideoProcessingConfig()  # Uses default values
 
-def get_robbery_detection_config() -> VideoProcessingConfig:
-    """Configuration optimized for detecting robbery/crime events"""
-    return VideoProcessingConfig(
-        base_quality_threshold=0.12,      # Lower threshold to catch all activity
-        motion_threshold=0.006,           # Very sensitive to motion
-        event_importance_threshold=0.22,   # Lower threshold for events
-        burst_weight=2.8,                 # High priority for burst activity
-        temporal_clustering_window=18.0,   # Good clustering for event sequences
-        max_summary_frames=20,            # More frames to show event progression
-        frame_display_duration=1.8,       # Longer display for analysis
-        similarity_threshold=0.83,        # Slightly looser deduplication
-        enable_clahe=True,                # Enhance low-light scenes
-        clahe_clip_limit=2.5,             # Higher contrast for details
-        # Object detection settings for crime detection
-        enable_object_detection=True,
-        object_detection_confidence=0.5,
-        fire_detection_confidence=0.4,    # Lower threshold for fire (safety critical)
-        weapon_detection_confidence=0.6,  # Higher threshold for weapons
-        object_event_temporal_window=5.0,
-        enable_object_annotation=True
-    )
+# Removed robbery detection config - using security_focused_config instead
 
 def get_security_focused_config() -> VideoProcessingConfig:
     """Configuration optimized specifically for security and threat detection"""
@@ -322,7 +303,7 @@ def print_parameter_guide():
     print(f"   • get_high_recall_config() - More keyframes, sensitive detection")
     print(f"   • get_high_precision_config() - Fewer but higher quality keyframes")
     print(f"   • get_balanced_config() - General purpose settings")
-    print(f"   • get_robbery_detection_config() - Optimized for crime/event detection")
+    print(f"   • get_security_focused_config() - Optimized for security/threat detection")
 
 if __name__ == "__main__":
     print_parameter_guide()

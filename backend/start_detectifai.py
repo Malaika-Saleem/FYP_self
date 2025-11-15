@@ -51,8 +51,7 @@ def check_model_files():
     print("\n🤖 Checking AI model files...")
     
     model_files = [
-        'models/fire_yolo11.pt',
-        'models/yolov11_knife_gun.pt'
+        'models/merged_fire_knife_gun.pt'
     ]
     
     missing_models = []

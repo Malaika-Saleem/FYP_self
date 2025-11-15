@@ -19,15 +19,15 @@ from datetime import datetime
 import json
 
 # Import all components
-from config import VideoProcessingConfig, get_robbery_detection_config, get_high_recall_config
-from core.video_processing import OptimizedVideoProcessor
-from event_aggregation import EventDetector, EventDeduplicationEngine
-from video_segmentation import VideoSegmentationEngine
-from highlight_reel import HighlightReelGenerator
-from video_compression import VideoCompressor
-from json_reports import ReportGenerator
-from object_detection import ObjectDetectionIntegrator
-from detectifai_events import DetectifAIEventType, ThreatLevel
+from backend.config import VideoProcessingConfig, get_security_focused_config, get_high_recall_config
+from backend.core.video_processing import OptimizedVideoProcessor
+from backend.event_aggregation import EventDetector, EventDeduplicationEngine
+from backend.video_segmentation import VideoSegmentationEngine
+from backend.highlight_reel import HighlightReelGenerator
+from backend.video_compression import VideoCompressor
+from backend.json_reports import ReportGenerator
+from backend.object_detection import ObjectDetectionIntegrator
+from backend.detectifai_events import DetectifAIEventType, ThreatLevel
 
 # Set up logging
 logging.basicConfig(
@@ -192,14 +192,29 @@ class CompleteVideoProcessingPipeline:
                 
                 # Additional facial recognition processing if available
                 try:
-                    from facial_recognition import FacialRecognitionPlaceholder
+                    from facial_recognition import FacialRecognitionIntegrated
                     
                     if hasattr(self.config, 'enable_facial_recognition') and self.config.enable_facial_recognition:
-                        logger.info("👤 Processing facial recognition for suspicious person tracking...")
-                        face_detector = FacialRecognitionPlaceholder(self.config)
+                        logger.info("👤 Processing facial recognition for suspicious activity frames...")
+                        face_detector = FacialRecognitionIntegrated(self.config)
                         
-                        # Analyze keyframes for faces
-                        face_results = face_detector.analyze_keyframes_for_faces(keyframes, detectifai_events)
+                        # Apply facial recognition ONLY to frames with suspicious activity (object detections)
+                        face_results = []
+                        suspicious_frames = []
+                        
+                        # Find frames with object detections (suspicious activity)
+                        if detection_results:
+                            suspicious_frames = [result for result in detection_results if result.total_detections > 0]
+                            logger.info(f"👤 Applying facial recognition to {len(suspicious_frames)} suspicious frames")
+                            
+                            # Run face detection on suspicious frames only
+                            for suspicious_frame in suspicious_frames:
+                                face_result = face_detector.detect_faces_in_frame(
+                                    suspicious_frame.frame_path, 
+                                    suspicious_frame.timestamp
+                                )
+                                if face_result.faces_detected > 0:
+                                    face_results.append(face_result)
                         
                         # Track suspicious persons and detect re-occurrences
                         if face_results:
@@ -262,16 +277,20 @@ class CompleteVideoProcessingPipeline:
             
             logger.info(f"✅ Created {len(canonical_events)} canonical events")
             
-            # Step 5: Generate highlight reels
-            logger.info("🎥 Step 5: Generating highlight reels...")
-            step_start = time.time()
+            # Step 5: Generate highlight reels (optional)
+            highlight_paths = {}
+            if self.config.generate_highlight_reels:
+                logger.info("🎥 Step 5: Generating highlight reels...")
+                step_start = time.time()
+                
+                highlight_paths = self._generate_all_highlight_reels(segments, canonical_events)
+                
+                self.processing_stats['component_times']['highlight_generation'] = time.time() - step_start
+                logger.info(f"✅ Generated {len(highlight_paths)} highlight reels")
+            else:
+                logger.info("⏭️ Step 5: Skipping highlight reel generation (disabled in config)")
             
-            highlight_paths = self._generate_all_highlight_reels(segments, canonical_events)
             results['outputs']['highlight_reels'] = highlight_paths
-            
-            self.processing_stats['component_times']['highlight_generation'] = time.time() - step_start
-            
-            logger.info(f"✅ Generated {len(highlight_paths)} highlight reels")
             
             # Step 5.5: Create annotated video with bounding boxes (if detections exist)
             annotated_video_path = None
@@ -509,9 +528,9 @@ def main():
     print("🎬 Video Processing Pipeline Demo")
     print("=" * 50)
     
-    # For robbery/crime detection - use specialized config
-    robbery_config = get_robbery_detection_config()
-    pipeline_robbery = CompleteVideoProcessingPipeline(robbery_config)
+    # For security detection - use specialized config
+    security_config = get_security_focused_config()
+    pipeline_security = CompleteVideoProcessingPipeline(security_config)
     
     # For high recall (more keyframes) - use high recall config
     high_recall_config = get_high_recall_config()
@@ -521,11 +540,11 @@ def main():
     video_file = "rob.mp4"  # Replace with your video file
     
     if os.path.exists(video_file):
-        print(f"\\n🎯 Processing with robbery detection config...")
-        results = pipeline_robbery.process_video_complete(video_file)
+        print(f"\n🎯 Processing with security detection config...")
+        results = pipeline_security.process_video_complete(video_file)
         
-        print(f"\\n📊 Processing Summary:")
-        summary = pipeline_robbery.get_processing_summary()
+        print(f"\n📊 Processing Summary:")
+        summary = pipeline_security.get_processing_summary()
         for key, value in summary.items():
             print(f"  {key}: {value}")
             
@@ -540,7 +559,7 @@ def main():
     else:
         print(f"❌ Video file not found: {video_file}")
         print("\\n💡 Available configuration presets:")
-        print("  - get_robbery_detection_config() - Optimized for crime/event detection")
+        print("  - get_security_focused_config() - Optimized for security/threat detection")
         print("  - get_high_recall_config() - More keyframes, sensitive detection") 
         print("  - get_high_precision_config() - Fewer but higher quality keyframes")
         print("  - get_balanced_config() - General purpose settings")

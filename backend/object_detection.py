@@ -2,8 +2,7 @@
 Object Detection Module for DetectifAI
 
 This module handles:
-- Fire detection using fire_yolo11.pt
-- Knife and gun detection using yolov11_knife_gun.pt
+- Fire, knife, and gun detection using merged_fire_knife_gun.pt
 - Integration with video processing pipeline
 - Object-based event generation
 """
@@ -72,30 +71,20 @@ class ObjectDetector:
         }
     
     def _load_models(self):
-        """Load YOLOv11 models for different object types"""
+        """Load YOLOv11 merged model for fire, knife, and gun detection"""
         try:
-            # Fire detection model
-            fire_model_path = os.path.join(self.config.models_dir, "fire_yolo11.pt")
-            if os.path.exists(fire_model_path):
-                logger.info(f"Loading fire detection model: {fire_model_path}")
-                self.models['fire'] = YOLO(fire_model_path)
-                self.models['fire'].to(self.device)
-                # Fix class names mapping: 0='fire', 1='smoke' (user wants fire detections labeled as fire)
-                self.class_names['fire'] = ['fire', 'smoke']
-                logger.info("✅ Fire detection model loaded successfully with corrected class names")
+            # Merged model for fire, knife, and gun detection
+            merged_model_path = os.path.join(self.config.models_dir, "merged_fire_knife_gun.pt")
+            if os.path.exists(merged_model_path):
+                logger.info(f"Loading merged detection model: {merged_model_path}")
+                self.models['merged'] = YOLO(merged_model_path)
+                self.models['merged'].to(self.device)
+                # Class names mapping for merged model: 0='fire', 1='knife', 2='gun'
+                self.class_names['merged'] = ['fire', 'knife', 'gun']
+                logger.info("✅ Merged detection model loaded successfully (fire, knife, gun)")
             else:
-                logger.warning(f"Fire model not found at: {fire_model_path}")
-            
-            # Knife and gun detection model
-            weapon_model_path = os.path.join(self.config.models_dir, "yolov11_knife_gun.pt")
-            if os.path.exists(weapon_model_path):
-                logger.info(f"Loading weapon detection model: {weapon_model_path}")
-                self.models['weapons'] = YOLO(weapon_model_path)
-                self.models['weapons'].to(self.device)
-                self.class_names['weapons'] = ['knife', 'gun']
-                logger.info("✅ Weapon detection model loaded successfully")
-            else:
-                logger.warning(f"Weapon model not found at: {weapon_model_path}")
+                logger.error(f"Merged model not found at: {merged_model_path}")
+                raise FileNotFoundError(f"Merged model not found at: {merged_model_path}")
             
             if not self.models:
                 logger.error("❌ No object detection models loaded!")

@@ -27,7 +27,7 @@ import numpy as np
 
 # Import DetectifAI components
 from main_pipeline import CompleteVideoProcessingPipeline
-from config import get_robbery_detection_config, get_security_focused_config, VideoProcessingConfig
+from config import get_security_focused_config, VideoProcessingConfig
 
 # Import database components
 from pymongo import MongoClient
@@ -221,8 +221,7 @@ def process_video_async(video_id, video_path, config_type='detectifai', user_id=
         # Select configuration with DetectifAI optimizations
         if config_type == 'detectifai' or config_type == 'security':
             config = get_security_focused_config()
-        elif config_type == 'robbery':
-            config = get_robbery_detection_config()
+        # Removed robbery detection - using security focused config
         elif config_type == 'high_recall':
             try:
                 from config import get_high_recall_config

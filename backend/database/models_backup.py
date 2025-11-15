@@ -271,7 +271,7 @@ class ObjectDetectionModel:
     center_point: List[float]  # [x, y]
     area: float
     frame_timestamp: float
-    detection_model: str  # fire_yolo11, yolov11_knife_gun
+    detection_model: str  # merged_fire_knife_gun
     threat_level: str = "low"
     created_at: Optional[datetime] = None
     _id: Optional[ObjectId] = None

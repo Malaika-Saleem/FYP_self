@@ -1,21 +1,74 @@
 """
-Facial Recognition and Person Tracking Module (Placeholder)
+Facial Recognition Module for DetectifAI
 
-This is a placeholder module for facial recognition and suspicious person tracking.
-Will store and match faces from security events for re-occurrence detection.
+This module handles facial recognition for suspicious activity frames:
+- Face detection using MTCNN (primary) or OpenCV Haar cascades (fallback)
+- Face embeddings using FaceNet (primary) or histogram-based (fallback)
+- FAISS vector similarity search (primary) or cosine similarity (fallback)
+- MongoDB metadata storage with local JSON fallback
+- Integration with suspicious activity detection pipeline
+
+Workflow (matches activity diagram):
+1. Receive frame from suspicious event (object detection)
+2. Run face detection
+3. If faces detected: crop faces, generate embeddings, store in FAISS/index
+4. Upload face crops to storage, save metadata to MongoDB/JSON
+5. Search for similar embeddings, link with previous incidents
+6. Assign new person ID if no match found
+
+Author: DetectifAI Team
 """
 
+import os
 import cv2
 import numpy as np
 import logging
 import json
-import os
-from typing import Dict, List, Tuple, Optional, Any
-from dataclasses import dataclass, asdict
+import uuid
 import time
+import warnings
+from typing import List, Tuple, Optional, Dict, Any
+from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
+# Advanced imports (with fallbacks)
+try:
+    import torch
+    from facenet_pytorch import MTCNN, InceptionResnetV1
+    import faiss
+    from pymongo import MongoClient
+    from dotenv import load_dotenv
+    ADVANCED_AVAILABLE = True
+    load_dotenv()
+except ImportError:
+    ADVANCED_AVAILABLE = False
+
+warnings.filterwarnings('ignore')
 logger = logging.getLogger(__name__)
+
+# ========================================
+# Configuration
+# ========================================
+
+# MongoDB Configuration
+MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/") if ADVANCED_AVAILABLE else None
+MONGO_DB_NAME = "detectifai"
+
+# FAISS Configuration
+FAISS_INDEX_PATH = "model/faiss_face_index.bin"
+FAISS_ID_MAP_PATH = "model/faiss_id_map.json"
+EMBEDDING_DIM = 512  # InceptionResnetV1 produces 512-dim embeddings
+
+# Simple fallback configuration
+SIMPLE_INDEX_PATH = "model/simple_face_index.json"
+
+# Face storage
+FACES_DIR = "model/faces"
+
+# ========================================
+# Data Models
+# ========================================
 
 @dataclass
 class FaceDetectionResult:
@@ -27,385 +80,600 @@ class FaceDetectionResult:
     face_bounding_boxes: List[Tuple[int, int, int, int]]
     face_confidence_scores: List[float]
     processing_time: float
+    detected_face_ids: List[str] = None
+    matched_persons: List[str] = None
 
-@dataclass
+@dataclass 
 class SuspiciousPerson:
     """Information about a suspicious person"""
     person_id: str
     first_detected: float  # timestamp
     last_seen: float       # timestamp
-    face_embedding: np.ndarray
+    face_embedding: Optional[np.ndarray]
     associated_events: List[str]  # event IDs where this person appeared
     threat_level: str
     notes: str
     detection_count: int
+    face_id: str = ""  # Primary face_id
 
-class FacialRecognitionPlaceholder:
-    """Placeholder for facial recognition and person tracking system"""
+# ========================================
+# Advanced Implementation (FAISS + FaceNet)
+# ========================================
+
+class AdvancedFaceDetector:
+    """Advanced face detector using MTCNN"""
+    
+    def __init__(self, device='cpu', min_face_size=20):
+        self.device = torch.device(device)
+        self.mtcnn = MTCNN(
+            image_size=160,
+            margin=20,
+            min_face_size=min_face_size,
+            thresholds=[0.5, 0.6, 0.6],
+            factor=0.709,
+            keep_all=True,
+            device=self.device
+        )
+        logger.info(f"[AdvancedFaceDetector] Initialized MTCNN on {device}")
+    
+    def detect_faces(self, frame: np.ndarray) -> Tuple[List[np.ndarray], List[np.ndarray], List[float]]:
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        boxes, probs = self.mtcnn.detect(rgb_frame, landmarks=False)
+
+        if boxes is None:
+            return [], [], []
+        
+        faces = self.mtcnn.extract(rgb_frame, boxes, save_path=None)
+        if faces is None:
+            return [], [], []
+        
+        valid_faces, valid_boxes, valid_probs = [], [], []
+        for face, prob, box in zip(faces, probs, boxes):
+            if face is not None and prob > 0.5:
+                valid_faces.append(face)
+                valid_boxes.append(box)
+                valid_probs.append(prob)
+        
+        return valid_faces, valid_boxes, valid_probs
+
+class AdvancedFaceEmbedder:
+    """Advanced face embedder using FaceNet"""
+    
+    def __init__(self, device='cpu', weights='vggface2'):
+        self.device = torch.device(device)
+        self.model = InceptionResnetV1(pretrained=weights).eval().to(self.device)
+        logger.info(f"[AdvancedFaceEmbedder] Loaded InceptionResnetV1 on {device}")
+    
+    def generate_embedding(self, face_tensor: torch.Tensor) -> np.ndarray:
+        with torch.no_grad():
+            face_tensor = face_tensor.to(self.device).unsqueeze(0)
+            embedding = self.model(face_tensor).cpu().numpy().flatten()
+        return embedding
+
+class FAISSFaceIndex:
+    """FAISS index manager for fast similarity search"""
+    
+    def __init__(self, embedding_dim: int = 512, index_path: str = FAISS_INDEX_PATH, 
+                 id_map_path: str = FAISS_ID_MAP_PATH):
+        self.embedding_dim = embedding_dim
+        self.index_path = index_path
+        self.id_map_path = id_map_path
+        self.index = None
+        self.id_map = {}
+        self.reverse_map = {}
+        
+        os.makedirs(os.path.dirname(index_path), exist_ok=True)
+        self._load_or_create_index()
+    
+    def _load_or_create_index(self):
+        if os.path.exists(self.index_path) and os.path.exists(self.id_map_path):
+            try:
+                self.index = faiss.read_index(self.index_path)
+                with open(self.id_map_path, 'r') as f:
+                    data = json.load(f)
+                    self.id_map = {int(k): v for k, v in data.items()}
+                    self.reverse_map = {v: int(k) for k, v in self.id_map.items()}
+                logger.info(f"[FAISS] Loaded index with {self.index.ntotal} embeddings")
+            except Exception as e:
+                logger.warning(f"[FAISS] Error loading index: {e}")
+                self._create_new_index()
+        else:
+            self._create_new_index()
+    
+    def _create_new_index(self):
+        self.index = faiss.IndexFlatIP(self.embedding_dim)
+        self.id_map = {}
+        self.reverse_map = {}
+        logger.info(f"[FAISS] Created new index (dim={self.embedding_dim})")
+    
+    def add_embedding(self, face_id: str, embedding: np.ndarray) -> int:
+        if face_id in self.reverse_map:
+            return self.reverse_map[face_id]
+        
+        embedding = embedding.astype('float32').reshape(1, -1)
+        embedding = embedding / np.linalg.norm(embedding)
+        
+        idx = self.index.ntotal
+        self.index.add(embedding)
+        
+        self.id_map[idx] = face_id
+        self.reverse_map[face_id] = idx
+        
+        return idx
+    
+    def search(self, query_embedding: np.ndarray, k: int = 5, threshold: float = 0.6) -> List[Tuple[str, float]]:
+        if self.index.ntotal == 0:
+            return []
+        
+        query_embedding = query_embedding.astype('float32').reshape(1, -1)
+        query_embedding = query_embedding / np.linalg.norm(query_embedding)
+        
+        similarities, indices = self.index.search(query_embedding, min(k, self.index.ntotal))
+        
+        results = []
+        for sim, idx in zip(similarities[0], indices[0]):
+            if idx in self.id_map and sim >= threshold:
+                results.append((self.id_map[idx], float(sim)))
+        
+        return results
+    
+    def save(self):
+        os.makedirs(os.path.dirname(self.index_path), exist_ok=True)
+        faiss.write_index(self.index, self.index_path)
+        with open(self.id_map_path, 'w') as f:
+            json.dump(self.id_map, f)
+
+class MongoDBFaceStorage:
+    """MongoDB storage for face metadata"""
+    
+    def __init__(self, mongo_uri: str, db_name: str = MONGO_DB_NAME):
+        try:
+            self.client = MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
+            self.db = self.client[db_name]
+            self.faces_collection = self.db['detected_faces']
+            self.client.server_info()  # Test connection
+            self.enabled = True
+            logger.info("[MongoDB] Connected successfully")
+        except Exception as e:
+            logger.warning(f"[MongoDB] Connection failed: {e}")
+            self.enabled = False
+    
+    def save_face(self, data: Dict) -> str:
+        if not self.enabled:
+            return ""
+        
+        data['detected_at'] = datetime.utcnow()
+        if 'face_embedding' in data:
+            del data['face_embedding']  # Don't store embeddings in MongoDB
+        data['face_embedding'] = []
+        
+        try:
+            result = self.faces_collection.insert_one(data)
+            return str(result.inserted_id)
+        except Exception as e:
+            logger.error(f"[MongoDB] Error saving face: {e}")
+            return ""
+    
+    def close(self):
+        if hasattr(self, 'client'):
+            self.client.close()
+
+# ========================================
+# Simple Implementation (OpenCV + Histograms)
+# ========================================
+
+class SimpleFaceDetector:
+    """Simple face detector using OpenCV Haar cascades"""
+    
+    def __init__(self, device='cpu'):
+        self.device = device
+        cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+        self.face_cascade = cv2.CascadeClassifier(cascade_path)
+        logger.info(f"[SimpleFaceDetector] Initialized with OpenCV Haar cascades")
+    
+    def detect_faces(self, frame: np.ndarray) -> Tuple[List[np.ndarray], List[np.ndarray], List[float]]:
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = self.face_cascade.detectMultiScale(gray, 1.1, 4, minSize=(30, 30))
+        
+        face_crops = []
+        boxes = []
+        confidences = []
+        
+        for (x, y, w, h) in faces:
+            face_crop = frame[y:y+h, x:x+w]
+            face_crops.append(face_crop)
+            boxes.append([x, y, x+w, y+h])
+            confidences.append(0.8)
+        
+        return face_crops, boxes, confidences
+
+class SimpleFaceEmbedder:
+    """Simple face embedder using histograms"""
+    
+    def __init__(self, device='cpu'):
+        self.device = device
+        logger.info(f"[SimpleFaceEmbedder] Using histogram-based embeddings")
+    
+    def generate_embedding(self, face_crop: np.ndarray) -> np.ndarray:
+        if isinstance(face_crop, np.ndarray) and len(face_crop.shape) == 3:
+            face_resized = cv2.resize(face_crop, (64, 64))
+            hsv = cv2.cvtColor(face_resized, cv2.COLOR_BGR2HSV)
+            
+            hist_h = cv2.calcHist([hsv], [0], None, [16], [0, 180])
+            hist_s = cv2.calcHist([hsv], [1], None, [16], [0, 256])
+            hist_v = cv2.calcHist([hsv], [2], None, [16], [0, 256])
+            
+            embedding = np.concatenate([hist_h.flatten(), hist_s.flatten(), hist_v.flatten()])
+            return embedding / np.linalg.norm(embedding)
+        else:
+            return np.random.rand(48) / np.linalg.norm(np.random.rand(48))
+
+class SimpleFaceIndex:
+    """Simple face index using cosine similarity"""
+    
+    def __init__(self, index_path: str = SIMPLE_INDEX_PATH):
+        self.index_path = index_path
+        self.faces_db = {}
+        
+        os.makedirs(os.path.dirname(index_path), exist_ok=True)
+        self._load_index()
+    
+    def _load_index(self):
+        if os.path.exists(self.index_path):
+            try:
+                with open(self.index_path, 'r') as f:
+                    data = json.load(f)
+                    self.faces_db = {face_id: np.array(embedding) 
+                                   for face_id, embedding in data.items()}
+                logger.info(f"[SimpleFaceIndex] Loaded {len(self.faces_db)} faces")
+            except Exception as e:
+                logger.warning(f"[SimpleFaceIndex] Error loading: {e}")
+                self.faces_db = {}
+        else:
+            self.faces_db = {}
+    
+    def add_embedding(self, face_id: str, embedding: np.ndarray) -> int:
+        if face_id in self.faces_db:
+            return len(self.faces_db)
+        
+        self.faces_db[face_id] = embedding
+        return len(self.faces_db)
+    
+    def search(self, query_embedding: np.ndarray, k: int = 5, threshold: float = 0.6) -> List[Tuple[str, float]]:
+        if not self.faces_db:
+            return []
+        
+        similarities = []
+        for face_id, stored_embedding in self.faces_db.items():
+            similarity = np.dot(query_embedding, stored_embedding) / (
+                np.linalg.norm(query_embedding) * np.linalg.norm(stored_embedding))
+            
+            if similarity >= threshold:
+                similarities.append((face_id, float(similarity)))
+        
+        similarities.sort(key=lambda x: x[1], reverse=True)
+        return similarities[:k]
+    
+    def save(self):
+        try:
+            data = {face_id: embedding.tolist() 
+                   for face_id, embedding in self.faces_db.items()}
+            
+            with open(self.index_path, 'w') as f:
+                json.dump(data, f)
+            
+            logger.debug(f"[SimpleFaceIndex] Saved {len(self.faces_db)} faces")
+        except Exception as e:
+            logger.error(f"[SimpleFaceIndex] Error saving: {e}")
+
+# ========================================
+# Main Facial Recognition Class
+# ========================================
+
+class FacialRecognitionIntegrated:
+    """
+    Unified facial recognition system for DetectifAI.
+    
+    Automatically uses advanced implementation (MTCNN + FaceNet + FAISS + MongoDB) 
+    if available, otherwise falls back to simple implementation (OpenCV + Histograms + JSON).
+    
+    Applies facial recognition ONLY to suspicious frames detected by object detection.
+    """
     
     def __init__(self, config):
         self.config = config
         self.enabled = getattr(config, 'enable_facial_recognition', False)
         self.confidence_threshold = getattr(config, 'face_recognition_confidence', 0.7)
+        self.similarity_threshold = 0.6
+        self.device = 'cuda' if torch.cuda.is_available() and getattr(config, 'use_gpu_acceleration', False) else 'cpu'
         
-        # Placeholder face database
-        self.suspicious_persons_db = {}
-        self.face_database_path = os.path.join(config.output_base_dir, "suspicious_persons_db.json")
+        # Create faces directory
+        self.faces_dir = Path(FACES_DIR)
+        self.faces_dir.mkdir(exist_ok=True, parents=True)
+        
+        # Determine implementation mode
+        self.advanced_mode = ADVANCED_AVAILABLE and self.enabled
+        
+        # Initialize components only if enabled
+        if self.enabled:
+            self._initialize_components()
         
         # Detection statistics
         self.detection_stats = {
+            'implementation_mode': 'advanced' if self.advanced_mode else 'simple',
             'frames_processed': 0,
             'faces_detected': 0,
             'suspicious_persons_tracked': 0,
-            'reoccurrences_detected': 0
+            'reoccurrences_detected': 0,
+            'new_faces_added': 0,
+            'face_matches_found': 0
         }
         
-        # Load existing database if available
-        self._load_suspicious_persons_db()
+        # Suspicious persons database
+        self.suspicious_persons_db = {}
         
-        logger.info("Facial Recognition Placeholder initialized (NOT IMPLEMENTED)")
+        if not self.enabled:
+            logger.info("[FacialRecognition] Disabled - skipping initialization")
+        else:
+            mode = "Advanced (MTCNN + FaceNet + FAISS)" if self.advanced_mode else "Simple (OpenCV + Histograms)"
+            logger.info(f"[FacialRecognition] ✅ Initialized in {mode} mode")
+    
+    def _initialize_components(self):
+        """Initialize facial recognition components based on available dependencies"""
+        try:
+            if self.advanced_mode:
+                # Advanced implementation
+                self.detector = AdvancedFaceDetector(self.device)
+                self.embedder = AdvancedFaceEmbedder(self.device)
+                self.face_index = FAISSFaceIndex()
+                
+                # MongoDB storage (optional)
+                if MONGO_URI:
+                    self.mongodb_storage = MongoDBFaceStorage(MONGO_URI)
+                else:
+                    self.mongodb_storage = None
+                    logger.info("[FacialRecognition] MongoDB not configured, using local storage only")
+                
+            else:
+                # Simple implementation
+                self.detector = SimpleFaceDetector()
+                self.embedder = SimpleFaceEmbedder()
+                self.face_index = SimpleFaceIndex()
+                self.mongodb_storage = None
+                
+        except Exception as e:
+            logger.error(f"[FacialRecognition] ❌ Initialization failed: {e}")
+            self.enabled = False
+            raise
+    
+    def _generate_face_id(self, frame_number: int, face_index: int, person_name: Optional[str] = None, event_id: str = "unknown") -> str:
+        """Generate unique face ID"""
+        prefix = f"{person_name.replace(' ', '_')}" if person_name else "unknown"
+        unique_id = str(uuid.uuid4())[:8]
+        return f"face_{prefix}_event_{event_id}_{frame_number:06d}_{face_index:02d}_{unique_id}"
+    
+    def _save_face_image(self, face_data, face_id: str) -> str:
+        """Save face image to disk"""
+        try:
+            path = self.faces_dir / f"{face_id}.jpg"
+            
+            if self.advanced_mode and hasattr(face_data, 'permute'):
+                # Convert tensor to numpy array
+                face_np = face_data.permute(1, 2, 0).numpy()
+                face_np = (face_np * 255).astype(np.uint8)
+                face_bgr = cv2.cvtColor(face_np, cv2.COLOR_RGB2BGR)
+                cv2.imwrite(str(path), face_bgr)
+            else:
+                # Direct numpy array
+                cv2.imwrite(str(path), face_data)
+                
+            return str(path)
+        except Exception as e:
+            logger.error(f"[FacialRecognition] Error saving face image: {e}")
+            return ""
     
     def detect_faces_in_frame(self, frame_path: str, timestamp: float) -> FaceDetectionResult:
         """
-        Placeholder method for face detection in single frame
+        Detect faces in a single frame (for suspicious frames only).
         
-        Currently simulates face detection
+        Args:
+            frame_path: Path to the frame image
+            timestamp: Timestamp of the frame in video
+            
+        Returns:
+            FaceDetectionResult with detected faces and metadata
         """
+        if not self.enabled:
+            return FaceDetectionResult(
+                frame_path=frame_path,
+                timestamp=timestamp,
+                faces_detected=0,
+                face_embeddings=[],
+                face_bounding_boxes=[],
+                face_confidence_scores=[],
+                processing_time=0.0
+            )
+        
         start_time = time.time()
         
-        # Placeholder logic - simulate face detection
-        faces_detected = 0
-        face_embeddings = []
-        face_bounding_boxes = []
-        face_confidence_scores = []
-        
         try:
-            # Load frame to get dimensions for simulation
+            # Load frame
             frame = cv2.imread(frame_path)
-            if frame is not None:
-                height, width = frame.shape[:2]
+            if frame is None:
+                logger.error(f"Could not load frame: {frame_path}")
+                return FaceDetectionResult(
+                    frame_path=frame_path,
+                    timestamp=timestamp,
+                    faces_detected=0,
+                    face_embeddings=[],
+                    face_bounding_boxes=[],
+                    face_confidence_scores=[],
+                    processing_time=0.0
+                )
+            
+            # Detect faces
+            faces, boxes, probs = self.detector.detect_faces(frame)
+            
+            # Generate embeddings and process faces
+            face_embeddings = []
+            detected_face_ids = []
+            matched_persons = []
+            
+            for i, (face, box, prob) in enumerate(zip(faces, boxes, probs)):
+                # Generate embedding
+                embedding = self.embedder.generate_embedding(face)
+                face_embeddings.append(embedding)
                 
-                # Simulate 0-3 faces per frame randomly based on timestamp
-                import random
-                random.seed(int(timestamp * 1000) % 1000)  # Deterministic for demo
-                faces_detected = random.randint(0, 2)  # 0-2 faces most common
+                # Search for similar faces
+                matches = self.face_index.search(embedding, k=1, threshold=self.similarity_threshold)
                 
-                for i in range(faces_detected):
-                    # Simulate face bounding box
-                    x = random.randint(50, width - 150)
-                    y = random.randint(50, height - 150)
-                    w = random.randint(80, 120)
-                    h = random.randint(90, 130)
+                if matches:
+                    # Found matching face
+                    matched_face_id, similarity = matches[0]
+                    detected_face_ids.append(matched_face_id)
+                    matched_persons.append(f"person_{matched_face_id}")
+                    self.detection_stats['face_matches_found'] += 1
+                    logger.info(f"👤 Face match found: {matched_face_id} (similarity: {similarity:.3f})")
+                else:
+                    # New face
+                    frame_number = int(timestamp * 30)  # Estimate frame number
+                    new_face_id = self._generate_face_id(frame_number, i, event_id=f"obj_detection_{int(timestamp)}")
                     
-                    face_bounding_boxes.append((x, y, x + w, y + h))
-                    face_confidence_scores.append(random.uniform(0.6, 0.95))
+                    # Add to index
+                    self.face_index.add_embedding(new_face_id, embedding)
                     
-                    # Simulate face embedding (128-dimensional vector)
-                    face_embedding = np.random.randn(128).astype(np.float32)
-                    face_embeddings.append(face_embedding)
-        
+                    # Save face image
+                    face_path = self._save_face_image(face, new_face_id)
+                    
+                    # Save metadata to MongoDB if available
+                    if self.mongodb_storage and self.mongodb_storage.enabled:
+                        face_metadata = {
+                            'face_id': new_face_id,
+                            'frame_path': frame_path,
+                            'timestamp': timestamp,
+                            'confidence': float(prob),
+                            'bounding_box': [int(x) for x in box],
+                            'face_image_path': face_path
+                        }
+                        self.mongodb_storage.save_face(face_metadata)
+                    
+                    detected_face_ids.append(new_face_id)
+                    matched_persons.append(f"new_person_{new_face_id}")
+                    self.detection_stats['new_faces_added'] += 1
+                    logger.info(f"👤 New face detected: {new_face_id}")
+            
+            # Save face index
+            self.face_index.save()
+            
+            processing_time = time.time() - start_time
+            self.detection_stats['frames_processed'] += 1
+            self.detection_stats['faces_detected'] += len(faces)
+            
+            # Convert boxes to expected format
+            face_bounding_boxes = [(int(box[0]), int(box[1]), int(box[2]), int(box[3])) for box in boxes]
+            
+            result = FaceDetectionResult(
+                frame_path=frame_path,
+                timestamp=timestamp,
+                faces_detected=len(faces),
+                face_embeddings=face_embeddings,
+                face_bounding_boxes=face_bounding_boxes,
+                face_confidence_scores=probs,
+                processing_time=processing_time,
+                detected_face_ids=detected_face_ids,
+                matched_persons=matched_persons
+            )
+            
+            if faces:
+                logger.info(f"👤 Processed {len(faces)} faces in suspicious frame at {timestamp:.2f}s")
+            
+            return result
+            
         except Exception as e:
-            logger.error(f"Error in placeholder face detection: {e}")
-        
-        processing_time = time.time() - start_time
-        
-        # Update stats
-        self.detection_stats['frames_processed'] += 1
-        self.detection_stats['faces_detected'] += faces_detected
-        
-        result = FaceDetectionResult(
-            frame_path=frame_path,
-            timestamp=timestamp,
-            faces_detected=faces_detected,
-            face_embeddings=face_embeddings,
-            face_bounding_boxes=face_bounding_boxes,
-            face_confidence_scores=face_confidence_scores,
-            processing_time=processing_time
-        )
-        
-        if faces_detected > 0:
-            logger.info(f"👤 PLACEHOLDER: {faces_detected} faces detected at {timestamp:.2f}s")
-        
-        return result
-    
-    def analyze_keyframes_for_faces(self, keyframes: List, security_events: List = None) -> List[FaceDetectionResult]:
-        """Analyze keyframes for face detection and tracking"""
-        if not self.enabled:
-            logger.info("Facial recognition disabled, skipping analysis")
-            return []
-        
-        logger.info(f"👤 PLACEHOLDER: Analyzing {len(keyframes)} keyframes for faces")
-        
-        results = []
-        security_event_timestamps = set()
-        
-        # Get timestamps of security events for enhanced face detection
-        if security_events:
-            for event in security_events:
-                if hasattr(event, 'start_timestamp') and hasattr(event, 'end_timestamp'):
-                    # Add timestamps within security events
-                    event_duration = event.end_timestamp - event.start_timestamp
-                    for i in range(int(event_duration) + 1):
-                        security_event_timestamps.add(event.start_timestamp + i)
-        
-        for keyframe in keyframes:
-            try:
-                timestamp = keyframe.frame_data.timestamp
-                frame_path = keyframe.frame_data.frame_path
-                
-                result = self.detect_faces_in_frame(frame_path, timestamp)
-                
-                # Enhanced detection during security events
-                if any(abs(timestamp - event_time) < 2.0 for event_time in security_event_timestamps):
-                    # Simulate higher detection rate during security events
-                    if result.faces_detected == 0:
-                        result.faces_detected = 1
-                        result.face_embeddings = [np.random.randn(128).astype(np.float32)]
-                        result.face_bounding_boxes = [(100, 100, 200, 220)]
-                        result.face_confidence_scores = [0.75]
-                
-                results.append(result)
-                
-            except Exception as e:
-                logger.error(f"Error analyzing keyframe for faces: {e}")
-                continue
-        
-        total_faces = sum(r.faces_detected for r in results)
-        logger.info(f"👤 PLACEHOLDER: Face analysis complete - {total_faces} total faces detected")
-        
-        return results
+            logger.error(f"[FacialRecognition] Error processing frame {frame_path}: {e}")
+            return FaceDetectionResult(
+                frame_path=frame_path,
+                timestamp=timestamp,
+                faces_detected=0,
+                face_embeddings=[],
+                face_bounding_boxes=[],
+                face_confidence_scores=[],
+                processing_time=time.time() - start_time
+            )
     
     def track_suspicious_persons(self, face_results: List[FaceDetectionResult], 
-                               security_events: List) -> List[Dict[str, Any]]:
-        """Track suspicious persons and detect re-occurrences"""
-        logger.info("👤 PLACEHOLDER: Tracking suspicious persons and detecting re-occurrences")
+                               detectifai_events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Track suspicious persons and detect re-occurrences."""
+        if not self.enabled or not face_results:
+            logger.info("👤 Facial recognition disabled or no face results - skipping person tracking")
+            return []
+        
+        logger.info(f"👤 Tracking suspicious persons across {len(face_results)} face detection results")
         
         reoccurrence_events = []
+        person_timeline = {}  # face_id -> list of timestamps
         
-        # Process faces detected during security events
-        security_event_times = []
-        for event in security_events:
-            if hasattr(event, 'start_timestamp') and hasattr(event, 'end_timestamp'):
-                security_event_times.append((event.start_timestamp, event.end_timestamp, event.event_id))
-        
+        # Build person timeline from face results
         for face_result in face_results:
-            if face_result.faces_detected == 0:
-                continue
-            
-            # Check if this face was detected during a security event
-            is_during_security_event = False
-            associated_event_id = None
-            
-            for start_time, end_time, event_id in security_event_times:
-                if start_time <= face_result.timestamp <= end_time:
-                    is_during_security_event = True
-                    associated_event_id = event_id
-                    break
-            
-            if is_during_security_event:
-                # Process each face in the frame
-                for i, face_embedding in enumerate(face_result.face_embeddings):
-                    confidence = face_result.face_confidence_scores[i]
-                    
-                    if confidence >= self.confidence_threshold:
-                        # Check for matches in suspicious persons database
-                        person_match = self._find_matching_person(face_embedding)
-                        
-                        if person_match:
-                            # Re-occurrence detected!
-                            person_match.last_seen = face_result.timestamp
-                            person_match.detection_count += 1
-                            person_match.associated_events.append(associated_event_id)
-                            
-                            # Create re-occurrence event
-                            reoccurrence_event = self._create_reoccurrence_event(
-                                person_match, face_result, associated_event_id
-                            )
-                            reoccurrence_events.append(reoccurrence_event)
-                            
-                            self.detection_stats['reoccurrences_detected'] += 1
-                            
-                            logger.info(f"🚨 PLACEHOLDER: Suspicious person re-occurrence detected! "
-                                       f"Person {person_match.person_id} seen again at {face_result.timestamp:.2f}s")
-                        
-                        else:
-                            # New suspicious person
-                            new_person = self._create_suspicious_person(
-                                face_embedding, face_result, associated_event_id
-                            )
-                            self.suspicious_persons_db[new_person.person_id] = new_person
-                            self.detection_stats['suspicious_persons_tracked'] += 1
-                            
-                            logger.info(f"👤 PLACEHOLDER: New suspicious person detected: {new_person.person_id}")
+            if face_result.detected_face_ids:
+                for face_id in face_result.detected_face_ids:
+                    if face_id not in person_timeline:
+                        person_timeline[face_id] = []
+                    person_timeline[face_id].append(face_result.timestamp)
         
-        # Save updated database
-        self._save_suspicious_persons_db()
+        # Look for re-occurrences (same person appearing multiple times)
+        for face_id, timestamps in person_timeline.items():
+            if len(timestamps) > 1:
+                # Create re-occurrence event
+                timestamps.sort()
+                reoccurrence_event = {
+                    'event_id': f"reoccurrence_{face_id}_{int(timestamps[-1])}",
+                    'start_timestamp': timestamps[0],
+                    'end_timestamp': timestamps[-1],
+                    'event_type': 'suspicious_person_reoccurrence',
+                    'confidence': 0.85,
+                    'max_confidence': 0.85,
+                    'keyframes': [r.frame_path for r in face_results if face_id in (r.detected_face_ids or [])],
+                    'importance_score': 4.0,
+                    'description': f"Suspicious person {face_id} appeared {len(timestamps)} times",
+                    'detection_details': {
+                        'person_id': face_id,
+                        'appearances': len(timestamps),
+                        'time_span': timestamps[-1] - timestamps[0],
+                        'timestamps': timestamps
+                    }
+                }
+                reoccurrence_events.append(reoccurrence_event)
+                self.detection_stats['reoccurrences_detected'] += 1
         
-        logger.info(f"👤 PLACEHOLDER: Person tracking complete - {len(reoccurrence_events)} re-occurrences detected")
+        # Save face index
+        if self.face_index:
+            self.face_index.save()
+        
+        # Update statistics
+        self.detection_stats['suspicious_persons_tracked'] = len(person_timeline)
+        
+        logger.info(f"👤 Person tracking complete: {len(person_timeline)} unique persons, {len(reoccurrence_events)} re-occurrences")
+        
         return reoccurrence_events
     
-    def _find_matching_person(self, face_embedding: np.ndarray, threshold: float = 0.8) -> Optional[SuspiciousPerson]:
-        """Find matching person in database using face embedding similarity"""
-        for person in self.suspicious_persons_db.values():
-            # Calculate cosine similarity (placeholder)
-            similarity = np.random.uniform(0.6, 1.0)  # Placeholder similarity
-            
-            if similarity >= threshold:
-                return person
-        
-        return None
-    
-    def _create_suspicious_person(self, face_embedding: np.ndarray, 
-                                face_result: FaceDetectionResult, 
-                                event_id: str) -> SuspiciousPerson:
-        """Create new suspicious person entry"""
-        person_id = f"suspect_{len(self.suspicious_persons_db) + 1:04d}_{int(face_result.timestamp)}"
-        
-        return SuspiciousPerson(
-            person_id=person_id,
-            first_detected=face_result.timestamp,
-            last_seen=face_result.timestamp,
-            face_embedding=face_embedding,
-            associated_events=[event_id],
-            threat_level="medium",  # Default threat level
-            notes=f"First detected during security event {event_id}",
-            detection_count=1
-        )
-    
-    def _create_reoccurrence_event(self, person: SuspiciousPerson, 
-                                 face_result: FaceDetectionResult,
-                                 associated_event_id: str) -> Dict[str, Any]:
-        """Create re-occurrence event for suspicious person"""
-        time_since_last = face_result.timestamp - person.first_detected
-        
-        return {
-            'event_id': f"reoccurrence_{person.person_id}_{int(face_result.timestamp)}",
-            'start_timestamp': face_result.timestamp - 1.0,
-            'end_timestamp': face_result.timestamp + 1.0,
-            'event_type': 'suspicious_person_reoccurrence',
-            'confidence': 0.8,  # High confidence for re-occurrence
-            'max_confidence': 0.8,
-            'keyframes': [face_result.frame_path],
-            'motion_intensity': 0.0,
-            'description': f"Suspicious person {person.person_id} re-occurred after {time_since_last:.1f} seconds",
-            'object_class': 'suspicious_person_reoccurrence',
-            'detection_count': 1,
-            'duration': 2.0,
-            'detection_details': {
-                'person_id': person.person_id,
-                'first_detected': person.first_detected,
-                'time_since_last_seen': time_since_last,
-                'total_detections': person.detection_count,
-                'associated_security_event': associated_event_id,
-                'threat_level': person.threat_level,
-                'placeholder': True,
-                'note': 'Generated by placeholder facial recognition - requires full implementation'
-            }
-        }
-    
-    def _load_suspicious_persons_db(self):
-        """Load suspicious persons database from file"""
-        if os.path.exists(self.face_database_path):
-            try:
-                with open(self.face_database_path, 'r') as f:
-                    data = json.load(f)
-                    
-                # Convert back to SuspiciousPerson objects (simplified for placeholder)
-                for person_id, person_data in data.get('persons', {}).items():
-                    # Skip face_embedding reconstruction for placeholder
-                    person_data['face_embedding'] = np.zeros(128)  # Placeholder
-                    self.suspicious_persons_db[person_id] = SuspiciousPerson(**person_data)
-                
-                logger.info(f"Loaded {len(self.suspicious_persons_db)} suspicious persons from database")
-            except Exception as e:
-                logger.error(f"Error loading suspicious persons database: {e}")
-    
-    def _save_suspicious_persons_db(self):
-        """Save suspicious persons database to file"""
-        try:
-            # Convert to serializable format (simplified for placeholder)
-            data = {
-                'metadata': {
-                    'total_persons': len(self.suspicious_persons_db),
-                    'last_updated': datetime.now().isoformat(),
-                    'placeholder': True
-                },
-                'persons': {}
-            }
-            
-            for person_id, person in self.suspicious_persons_db.items():
-                person_dict = asdict(person)
-                # Remove numpy array for JSON serialization
-                person_dict.pop('face_embedding', None)
-                data['persons'][person_id] = person_dict
-            
-            with open(self.face_database_path, 'w') as f:
-                json.dump(data, f, indent=2)
-            
-            logger.info(f"Saved {len(self.suspicious_persons_db)} suspicious persons to database")
-        except Exception as e:
-            logger.error(f"Error saving suspicious persons database: {e}")
-    
     def get_detection_stats(self) -> Dict[str, Any]:
-        """Get facial recognition and tracking statistics"""
+        """Get facial recognition detection statistics"""
         stats = self.detection_stats.copy()
-        stats['total_suspicious_persons'] = len(self.suspicious_persons_db)
-        
-        if stats['frames_processed'] > 0:
-            stats['face_detection_rate'] = stats['faces_detected'] / stats['frames_processed']
-        else:
-            stats['face_detection_rate'] = 0.0
-        
-        stats['implementation_status'] = 'PLACEHOLDER - Not fully implemented'
-        stats['requires_modules'] = [
-            'Face detection (MTCNN, RetinaFace)',
-            'Face recognition (FaceNet, ArcFace)',
-            'Face embedding database',
-            'Person re-identification'
-        ]
-        
+        if hasattr(self, 'face_index'):
+            if self.advanced_mode:
+                stats['total_faces_in_database'] = self.face_index.index.ntotal if self.face_index.index else 0
+            else:
+                stats['total_faces_in_database'] = len(self.face_index.faces_db) if self.face_index else 0
         return stats
     
-    def get_suspicious_persons_summary(self) -> Dict[str, Any]:
-        """Get summary of tracked suspicious persons"""
-        return {
-            'total_persons': len(self.suspicious_persons_db),
-            'persons': [
-                {
-                    'person_id': person.person_id,
-                    'first_detected': person.first_detected,
-                    'last_seen': person.last_seen,
-                    'detection_count': person.detection_count,
-                    'associated_events': person.associated_events,
-                    'threat_level': person.threat_level
-                } for person in self.suspicious_persons_db.values()
-            ]
-        }
+    def cleanup(self):
+        """Cleanup resources"""
+        if hasattr(self, 'face_index'):
+            self.face_index.save()
+        if hasattr(self, 'mongodb_storage') and self.mongodb_storage:
+            self.mongodb_storage.close()
+        logger.info("[FacialRecognition] Cleanup completed")
 
-# Future implementation requirements
-FACIAL_RECOGNITION_REQUIREMENTS = {
-    'computer_vision': [
-        'Face detection (MTCNN, RetinaFace, YOLO-Face)',
-        'Face alignment and normalization',
-        'Face quality assessment',
-        'Age and gender estimation (optional)'
-    ],
-    'machine_learning': [
-        'Face recognition models (FaceNet, ArcFace, CosFace)',
-        'Face embedding extraction',
-        'Similarity matching algorithms',
-        'Person re-identification models'
-    ],
-    'database': [
-        'Face embedding database (vector database)',
-        'Person metadata storage',
-        'Fast similarity search (FAISS, Annoy)',
-        'Database synchronization and backup'
-    ],
-    'privacy_security': [
-        'Face data encryption at rest',
-        'Privacy-preserving face matching',
-        'Data retention policies',
-        'GDPR compliance measures'
-    ]
-}
+# For backward compatibility
+FacialRecognitionPlaceholder = FacialRecognitionIntegrated
