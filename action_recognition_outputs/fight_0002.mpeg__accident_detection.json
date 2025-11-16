@@ -1,0 +1,7 @@
+{
+  "video": "C:\\Users\\hp\\Downloads\\fight_0002.mpeg",
+  "model": "C:\\Users\\hp\\Desktop\\DetectifAI\\moimma-give\\FYP_self\\backend\\behavior_analysis\\accident_detection.pt",
+  "frames_processed": 0,
+  "processing_time": 541.684816122055,
+  "predictions": []
+}

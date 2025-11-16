@@ -1,0 +1,98 @@
+{
+  "video": "C:\\Users\\hp\\Downloads\\fight_0002.mpeg",
+  "model": "C:\\Users\\hp\\Desktop\\DetectifAI\\moimma-give\\FYP_self\\backend\\behavior_analysis\\wallclimb.pt",
+  "frames_processed": 15,
+  "processing_time": 55.04411578178406,
+  "predictions": [
+    {
+      "timestamp": 16.4,
+      "frame_index": 410,
+      "label": "climbing",
+      "confidence": 0.5357197523117065
+    },
+    {
+      "timestamp": 16.6,
+      "frame_index": 415,
+      "label": "climbing",
+      "confidence": 0.5442439913749695
+    },
+    {
+      "timestamp": 17.0,
+      "frame_index": 425,
+      "label": "climbing",
+      "confidence": 0.5350717902183533
+    },
+    {
+      "timestamp": 17.2,
+      "frame_index": 430,
+      "label": "climbing",
+      "confidence": 0.5240380167961121
+    },
+    {
+      "timestamp": 17.4,
+      "frame_index": 435,
+      "label": "climbing",
+      "confidence": 0.5007744431495667
+    },
+    {
+      "timestamp": 17.6,
+      "frame_index": 440,
+      "label": "climbing",
+      "confidence": 0.5566372871398926
+    },
+    {
+      "timestamp": 20.2,
+      "frame_index": 505,
+      "label": "climbing",
+      "confidence": 0.5369997024536133
+    },
+    {
+      "timestamp": 24.4,
+      "frame_index": 610,
+      "label": "climbing",
+      "confidence": 0.5568726062774658
+    },
+    {
+      "timestamp": 25.6,
+      "frame_index": 640,
+      "label": "climbing",
+      "confidence": 0.65742027759552
+    },
+    {
+      "timestamp": 25.8,
+      "frame_index": 645,
+      "label": "climbing",
+      "confidence": 0.6466782689094543
+    },
+    {
+      "timestamp": 26.0,
+      "frame_index": 650,
+      "label": "climbing",
+      "confidence": 0.7061265707015991
+    },
+    {
+      "timestamp": 26.2,
+      "frame_index": 655,
+      "label": "climbing",
+      "confidence": 0.6985527873039246
+    },
+    {
+      "timestamp": 26.4,
+      "frame_index": 660,
+      "label": "climbing",
+      "confidence": 0.5331711769104004
+    },
+    {
+      "timestamp": 26.8,
+      "frame_index": 670,
+      "label": "climbing",
+      "confidence": 0.6891101598739624
+    },
+    {
+      "timestamp": 27.0,
+      "frame_index": 675,
+      "label": "climbing",
+      "confidence": 0.5177386999130249
+    }
+  ]
+}
