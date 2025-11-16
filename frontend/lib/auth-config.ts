@@ -95,5 +95,15 @@ export const authOptions: NextAuthOptions = {
   },
 
   session: { strategy: "jwt" },
-  secret: process.env.NEXTAUTH_SECRET,
+  secret: process.env.NEXTAUTH_SECRET || process.env.AUTH_SECRET,
+}
+
+// Validate that secret is set
+if (!process.env.NEXTAUTH_SECRET && !process.env.AUTH_SECRET) {
+  console.error("⚠️ WARNING: NEXTAUTH_SECRET is not set in environment variables!")
+  console.error("Please add NEXTAUTH_SECRET to your .env.local file")
+  console.error("Current working directory:", process.cwd())
+  console.error("NODE_ENV:", process.env.NODE_ENV)
+} else {
+  console.log("✅ NEXTAUTH_SECRET is loaded successfully")
 }

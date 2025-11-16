@@ -6,9 +6,11 @@ export async function GET(
 ) {
   try {
     const videoId = params.videoId
+    const { searchParams } = new URL(request.url)
+    const filterDetections = searchParams.get('filter_detections') || 'false'
     
     // Forward request to Flask backend for keyframes list - try v2 endpoint first, fallback to legacy
-    let response = await fetch(`http://localhost:5000/api/v2/video/keyframes/${videoId}`, {
+    let response = await fetch(`http://localhost:5000/api/v2/video/keyframes/${videoId}?filter_detections=${filterDetections}`, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
