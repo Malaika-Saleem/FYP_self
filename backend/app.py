@@ -20,6 +20,7 @@ import logging
 import uuid
 import time
 from typing import List, Dict, Any
+import multiprocessing as mp
 
 # Import DetectifAI components
 from main_pipeline import CompleteVideoProcessingPipeline
@@ -179,7 +180,50 @@ def process_video_async(video_id, video_path, config_type='detectifai'):
         output_name = os.path.splitext(os.path.basename(video_path))[0]
         results = None
         processing_errors = []
-        
+
+        # Start action recognition in parallel (if available)
+        try:
+            try:
+                # behavior_analysis package is relative to this backend package
+                from behavior_analysis import action_recognition as action_recog
+                AR_AVAILABLE = True
+            except Exception:
+                try:
+                    # Fallback import path
+                    import behavior_analysis.action_recognition as action_recog
+                    AR_AVAILABLE = True
+                except Exception:
+                    AR_AVAILABLE = False
+
+            if AR_AVAILABLE:
+                try:
+                    model_paths = list(action_recog.MODEL_PATHS.values())
+                    ar_output_dir = os.path.join(config.output_base_dir, 'action_recognition_outputs')
+
+                    # Start a separate process (Windows-safe spawn)
+                    p = mp.Process(
+                        target=action_recog.run_models_on_videos,
+                        args=([video_path], model_paths),
+                        kwargs={
+                            'output_dir': ar_output_dir,
+                            'use_gpu': getattr(config, 'use_gpu_acceleration', True),
+                            'frame_skip': getattr(config, 'action_frame_skip', 5),
+                            'annotate': getattr(config, 'action_annotate', True)
+                        }
+                    )
+                    p.daemon = True
+                    p.start()
+                    processing_status[video_id]['action_recognition_pid'] = p.pid
+                    logger.info(f"Started action recognition PID={p.pid} for video {video_id}")
+                    # update message
+                    processing_status[video_id]['message'] = 'Action recognition started in parallel with pipeline'
+                except Exception as e:
+                    logger.warning(f"Failed to start action recognition in parallel: {e}")
+
+        except Exception:
+            # Non-fatal: if imports fail or action rec process cannot be started, continue with pipeline
+            logger.debug('Action recognition parallel start skipped or failed')
+
         try:
             results = pipeline.process_video_complete(video_path, output_name)
             logger.info(f"✅ Core pipeline processing completed for {video_id}")
