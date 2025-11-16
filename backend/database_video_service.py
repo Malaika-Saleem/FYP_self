@@ -13,6 +13,7 @@ from typing import Dict, List, Any, Optional
 from datetime import datetime
 import logging
 import uuid
+import json
 
 # Import existing processing components
 from config import VideoProcessingConfig
@@ -81,43 +82,43 @@ class DatabaseIntegratedVideoService:
         logger.info(f"🚀 Starting database-integrated processing for video: {video_id}")
         
         try:
-            # Step 1: Extract video metadata and create database record
-            video_metadata = self._extract_video_metadata(video_path)
-            
-            # Create video record matching video_files MongoDB schema
-            video_record = {
-                "video_id": video_id,
-                "user_id": user_id or "system",
-                "file_path": f"videos/{video_id}/video.mp4",
-                "minio_object_key": f"original/{video_id}/video.mp4",  # required by schema
-                "minio_bucket": self.video_repo.video_bucket,  # required by schema
-                "codec": "h264",  # required by schema
-                "fps": float(video_metadata.get("fps", 30.0)),  # must be double type
-                "upload_date": datetime.utcnow(),  # required by schema
-                "duration_secs": int(video_metadata.get("duration", 0)),  # must be int type
-                "file_size_bytes": int(video_metadata.get("file_size", 0)),  # must be long type
-                "meta_data": {
-                    "filename": os.path.basename(video_path),
-                    "resolution": video_metadata.get("resolution"),
-                    "processing_status": "processing",
-                    "processing_progress": 0,
-                    "processing_message": "Starting processing..."
+            # Check if MongoDB record already exists (created during upload)
+            existing_video = self.video_repo.get_video_by_id(video_id)
+            if not existing_video:
+                logger.warning(f"⚠️ Video record not found in MongoDB for {video_id}, creating now...")
+                # Fallback: create record if it doesn't exist
+                video_metadata = self._extract_video_metadata(video_path)
+                video_record = {
+                    "video_id": video_id,
+                    "user_id": user_id or "system",
+                    "file_path": f"videos/{video_id}/video.mp4",
+                    "minio_object_key": f"original/{video_id}/video.mp4",
+                    "minio_bucket": self.video_repo.video_bucket,
+                    "codec": "h264",
+                    "fps": float(video_metadata.get("fps", 30.0)),
+                    "upload_date": datetime.utcnow(),
+                    "duration_secs": int(video_metadata.get("duration", 0)),
+                    "file_size_bytes": int(video_metadata.get("file_size", 0)),
+                    "meta_data": {
+                        "filename": os.path.basename(video_path),
+                        "resolution": video_metadata.get("resolution"),
+                        "processing_status": "processing",
+                        "processing_progress": 0,
+                        "processing_message": "Starting processing..."
+                    }
                 }
-            }
+                self.video_repo.create_video_record(video_record)
+            else:
+                logger.info(f"✅ MongoDB record already exists for {video_id}, proceeding with processing...")
             
-            video_doc_id = self.video_repo.create_video_record(video_record)
-            
-            # Step 2: Upload original video to MinIO
+            # Update status: processing started
             self.video_repo.update_metadata(video_id, {
-                "processing_progress": 5,
-                "processing_message": "Uploading video to cloud storage..."
-            })
-            minio_path = self.video_repo.upload_video_to_minio(video_path, video_id)
-            self.video_repo.update_metadata(video_id, {
-                "minio_original_path": minio_path
+                "processing_status": "processing",
+                "processing_progress": 10,
+                "processing_message": "Starting video processing pipeline..."
             })
             
-            # Step 3: Extract keyframes and store in MinIO
+            # Step 1: Extract keyframes and upload to MinIO
             self.video_repo.update_metadata(video_id, {
                 "processing_progress": 15,
                 "processing_message": "Extracting and uploading keyframes..."
@@ -198,17 +199,32 @@ class DatabaseIntegratedVideoService:
                 if (idx + 1) % 10 == 0:
                     logger.info(f"Uploaded {idx + 1}/{len(keyframe_batch)} keyframes")
             
-            # Update video metadata with keyframe information
+            # Step 2: Update MongoDB with keyframe MinIO paths (link metadata)
+            # Store each keyframe's MinIO path in MongoDB metadata
+            keyframe_metadata = []
+            for kf in keyframe_info:
+                keyframe_metadata.append({
+                    "frame_number": kf["frame_number"],
+                    "timestamp": kf["timestamp"],
+                    "minio_path": kf["minio_path"],
+                    "minio_bucket": self.keyframe_repo.bucket,
+                    "size_bytes": kf["size_bytes"],
+                    "uploaded_at": kf["uploaded_at"]
+                })
+            
+            # Update video metadata with keyframe information and MinIO links
             self.video_repo.update_metadata(video_id, {
-                "keyframe_info": keyframe_info,
+                "keyframe_info": keyframe_metadata,  # Full metadata with MinIO paths
                 "keyframe_count": len(keyframe_info),
                 "keyframe_bucket": self.keyframe_repo.bucket,
+                "keyframes_minio_paths": [kf["minio_path"] for kf in keyframe_info],  # Quick access list
                 "upload_stats": {
                     "total_frames": len(keyframe_batch),
                     "uploaded_frames": len(keyframe_info),
                     "upload_completed": datetime.utcnow().isoformat()
                 }
             })
+            logger.info(f"✅ Uploaded {len(keyframe_info)} keyframes to MinIO and linked in MongoDB")
             
             # Step 4: Object detection (if enabled)
             detection_results = []
@@ -228,21 +244,214 @@ class DatabaseIntegratedVideoService:
             })
             
             # Create events from object detections
+            event_ids = []
+            object_events = []
             if detection_results:
                 object_events = self._create_object_events_from_detections(detection_results)
                 # Save events using EventRepository
                 for event in object_events:
                     event['video_id'] = video_id  # Add video_id to event data
-                    self.event_repo.save_event(event)
+                    event_id = self.event_repo.save_event(event)
+                    event_ids.append(event_id)
             
-            # Step 6: Generate compressed video (optional)
-            compressed_path = None
+            # Step 5.5: Run facial recognition on frames with detections (if enabled)
+            face_results = []
+            if self.config.enable_facial_recognition and detection_results and event_ids:
+                self.video_repo.update_metadata(video_id, {
+                    "processing_progress": 75,
+                    "processing_message": "Running facial recognition on suspicious frames..."
+                })
+                try:
+                    from facial_recognition import FacialRecognitionIntegrated
+                    face_detector = FacialRecognitionIntegrated(self.config)
+                    
+                    # Get frames that have detections for facial recognition
+                    frames_with_detections = []
+                    for i, keyframe in enumerate(keyframes):
+                        frame_data = keyframe.frame_data if hasattr(keyframe, 'frame_data') else keyframe
+                        frame_path = (
+                            frame_data.frame_path if hasattr(frame_data, 'frame_path')
+                            else getattr(frame_data, 'path', None)
+                        )
+                        timestamp = (
+                            frame_data.timestamp if hasattr(frame_data, 'timestamp')
+                            else getattr(frame_data, 'timestamp', 0.0)
+                        )
+                        
+                        # Check if this frame has detections
+                        has_detection = any(
+                            abs(d['frame_timestamp'] - timestamp) < 0.5 
+                            for d in detection_results
+                        )
+                        
+                        if has_detection and frame_path and os.path.exists(frame_path):
+                            frames_with_detections.append((frame_path, timestamp))
+                    
+                    # Run facial recognition on suspicious frames
+                    for frame_path, timestamp in frames_with_detections:
+                        try:
+                            # Find associated event_id for this timestamp
+                            associated_event_id = None
+                            for event_id, event in zip(event_ids, object_events):
+                                if (event.get('start_timestamp', 0) <= timestamp <= 
+                                    event.get('end_timestamp', float('inf'))):
+                                    associated_event_id = event_id
+                                    break
+                            
+                            if not associated_event_id and event_ids:
+                                associated_event_id = event_ids[0]  # Fallback to first event
+                            
+                            # Detect faces in frame
+                            face_result = face_detector.detect_faces_in_frame(frame_path, timestamp)
+                            
+                            # Convert FaceDetectionResult to list of face info dictionaries
+                            if face_result and face_result.faces_detected > 0:
+                                # Extract face information from FaceDetectionResult
+                                for i in range(face_result.faces_detected):
+                                    face_id = face_result.detected_face_ids[i] if face_result.detected_face_ids and i < len(face_result.detected_face_ids) else f"face_{uuid.uuid4().hex[:8]}"
+                                    bounding_box = face_result.face_bounding_boxes[i] if i < len(face_result.face_bounding_boxes) else [0, 0, 0, 0]
+                                    confidence = face_result.face_confidence_scores[i] if i < len(face_result.face_confidence_scores) else 0.0
+                                    matched_person = face_result.matched_persons[i] if face_result.matched_persons and i < len(face_result.matched_persons) else None
+                                    
+                                    # Construct face_info dictionary
+                                    face_info = {
+                                        'face_id': face_id,
+                                        'bounding_box': bounding_box,
+                                        'confidence': confidence,
+                                        'person_name': matched_person.split('(')[0].strip() if matched_person else None,
+                                        'face_image_path': None  # Will be set if saved
+                                    }
+                                    
+                                    # Try to get face image path from MongoDB if it was saved
+                                    try:
+                                        faces_collection = self.db_manager.db.detected_faces
+                                        existing_face = faces_collection.find_one({'face_id': face_id})
+                                        if existing_face:
+                                            face_info['face_image_path'] = existing_face.get('face_image_path')
+                                    except:
+                                        pass
+                                    
+                                    # Process this face_info - Save face to MongoDB detected_faces collection
+                                    face_data = {
+                                        'face_id': face_info.get('face_id', f"face_{uuid.uuid4().hex[:8]}"),
+                                        'event_id': associated_event_id or f"event_{uuid.uuid4().hex[:8]}",
+                                        'detected_at': datetime.utcnow(),
+                                        'confidence_score': float(face_info.get('confidence', 0.0)),
+                                        'bounding_box': face_info.get('bounding_box', []),
+                                        'person_name': face_info.get('person_name'),
+                                        'person_confidence': None,
+                                        'face_image_path': '',  # Initialize as empty string (schema requires string)
+                                        'minio_object_key': None,
+                                        'minio_bucket': None
+                                    }
+                                    
+                                    # Upload face image to MinIO if available
+                                    # First try to save face image from the face detection result
+                                    temp_face_path = None
+                                    try:
+                                        # Get face crop from the detection result
+                                        if i < len(face_result.face_bounding_boxes):
+                                            # Load frame and crop face
+                                            import cv2
+                                            frame_img = cv2.imread(frame_path)
+                                            if frame_img is not None:
+                                                box = face_result.face_bounding_boxes[i]
+                                                x1, y1, x2, y2 = box[0], box[1], box[2], box[3]
+                                                
+                                                # Ensure valid coordinates
+                                                x1, y1 = max(0, x1), max(0, y1)
+                                                x2, y2 = min(frame_img.shape[1], x2), min(frame_img.shape[0], y2)
+                                                
+                                                if x2 > x1 and y2 > y1:
+                                                    face_crop = frame_img[y1:y2, x1:x2]
+                                                    
+                                                    # Create temp directory if it doesn't exist
+                                                    temp_dir = "temp_faces"
+                                                    os.makedirs(temp_dir, exist_ok=True)
+                                                    
+                                                    # Save face crop temporarily
+                                                    temp_face_path = os.path.join(temp_dir, f"{face_data['face_id']}.jpg")
+                                                    cv2.imwrite(temp_face_path, face_crop)
+                                                    
+                                                    # Verify file was created
+                                                    if os.path.exists(temp_face_path):
+                                                        # Upload to MinIO
+                                                        minio_face_path = f"{video_id}/faces/{face_data['face_id']}.jpg"
+                                                        with open(temp_face_path, 'rb') as f:
+                                                            file_size = os.path.getsize(temp_face_path)
+                                                            self.keyframe_repo.minio.put_object(
+                                                                self.keyframe_repo.bucket,
+                                                                minio_face_path,
+                                                                f,
+                                                                file_size,
+                                                                content_type='image/jpeg'
+                                                            )
+                                                        
+                                                        face_data['minio_object_key'] = minio_face_path
+                                                        face_data['minio_bucket'] = self.keyframe_repo.bucket
+                                                        face_data['face_image_path'] = minio_face_path  # Store MinIO path, not temp path
+                                                        logger.info(f"✅ Uploaded face image to MinIO: {minio_face_path}")
+                                                    else:
+                                                        logger.warning(f"Failed to create temp face file: {temp_face_path}")
+                                                else:
+                                                    logger.warning(f"Invalid bounding box coordinates: ({x1}, {y1}, {x2}, {y2})")
+                                    except Exception as e:
+                                        logger.warning(f"Failed to upload face image to MinIO: {e}")
+                                        import traceback
+                                        logger.debug(traceback.format_exc())
+                                    
+                                    # Clean up temp file AFTER MongoDB save (not before)
+                                    # Save to MongoDB
+                                    try:
+                                        # Ensure face_image_path is a string (not None) for schema validation
+                                        if not face_data.get('face_image_path'):
+                                            face_data['face_image_path'] = ''  # Empty string is valid
+                                        
+                                        faces_collection = self.db_manager.db.detected_faces
+                                        faces_collection.insert_one(face_data)
+                                        face_results.append(face_data)
+                                        logger.info(f"✅ Saved face to MongoDB: {face_data['face_id']}")
+                                    except Exception as e:
+                                        logger.error(f"Failed to save face to MongoDB: {e}")
+                                        import traceback
+                                        logger.debug(traceback.format_exc())
+                                        # Still add to results even if MongoDB save fails
+                                        face_results.append(face_data)
+                                    
+                                    # Clean up temp file AFTER MongoDB save
+                                    if temp_face_path and os.path.exists(temp_face_path):
+                                        try:
+                                            os.remove(temp_face_path)
+                                        except Exception as e:
+                                            logger.warning(f"Failed to remove temp face file: {e}")
+                                    
+                        except Exception as e:
+                            logger.error(f"Facial recognition error for frame {frame_path}: {e}")
+                            continue
+                    
+                    logger.info(f"✅ Facial recognition completed: {len(face_results)} faces detected")
+                    
+                    # Update metadata with face count
+                    self.video_repo.update_metadata(video_id, {
+                        "face_count": len(face_results),
+                        "facial_recognition_completed": True
+                    })
+                    
+                except ImportError:
+                    logger.warning("Facial recognition module not available")
+                except Exception as e:
+                    logger.error(f"Facial recognition failed: {e}")
+            
+            # Step 6: Generate compressed video and upload to MinIO (optional)
+            compressed_minio_path = None
             if self.config.generate_compressed_video:
                 self.video_repo.update_metadata(video_id, {
                     "processing_progress": 95,
-                    "processing_message": "Generating compressed video..."
+                    "processing_message": "Generating and uploading compressed video..."
                 })
-                compressed_path = self._generate_compressed_video(video_path, video_id)
+                compressed_minio_path = self._generate_compressed_video(video_path, video_id)
+                if compressed_minio_path:
+                    logger.info(f"✅ Compressed video uploaded to MinIO: {compressed_minio_path}")
             
             # Step 7: Finalize processing
             final_meta_data = {
@@ -252,11 +461,18 @@ class DatabaseIntegratedVideoService:
                 "keyframe_count": len(keyframes),
                 "detection_count": len(detection_results),
                 "event_count": len(object_events) if detection_results else 0,
+                "face_count": len(face_results) if 'face_results' in locals() else 0,
                 "processed_at": datetime.utcnow().isoformat()
             }
             
-            if compressed_path:
-                final_meta_data["minio_compressed_path"] = compressed_path
+            # Link compressed video MinIO path in MongoDB metadata
+            if compressed_minio_path:
+                final_meta_data["minio_compressed_path"] = compressed_minio_path
+                # Also update the main document field
+                self.video_repo.collection.update_one(
+                    {"video_id": video_id},
+                    {"$set": {"meta_data.minio_compressed_path": compressed_minio_path}}
+                )
             
             self.video_repo.update_processing_status(video_id, "completed")
             self.video_repo.update_metadata(video_id, final_meta_data)
@@ -304,8 +520,9 @@ class DatabaseIntegratedVideoService:
             return {"file_size": os.path.getsize(video_path)}
     
     def _run_object_detection_on_keyframes(self, video_id: str, keyframes: List) -> List[Dict]:
-        """Run object detection on extracted keyframes and return detections"""
+        """Run object detection on extracted keyframes, create annotated frames, and upload to MinIO"""
         detection_results = []
+        annotated_keyframes_info = []  # Store info about annotated keyframes
         
         try:
             for i, keyframe in enumerate(keyframes):
@@ -325,34 +542,93 @@ class DatabaseIntegratedVideoService:
                         else getattr(frame_data, 'timestamp', 0.0)
                     )
                     
+                    frame_number = getattr(frame_data, 'frame_number', i)
+                    
                     # Run detection on this keyframe
                     detection_result = self.object_detector.detect_objects_in_frame(
                         frame_path, 
                         timestamp
                     )
                     
-                    # Process detected objects
-                    if detection_result.detected_objects:
+                    # Process detected objects and create annotated frame if detections exist
+                    annotated_minio_path = None
+                    if detection_result and detection_result.detected_objects:
+                        # Create annotated version of the frame
+                        try:
+                            annotated_path = self.object_detector.annotate_frame_with_detections(
+                                frame_path, 
+                                detection_result
+                            )
+                            
+                            # Upload annotated frame to MinIO
+                            if annotated_path and os.path.exists(annotated_path):
+                                annotated_minio_path = f"{video_id}/keyframes/annotated/frame_{frame_number:06d}_annotated.jpg"
+                                
+                                with open(annotated_path, 'rb') as f:
+                                    file_size = os.path.getsize(annotated_path)
+                                    metadata = {
+                                        "frame_number": str(frame_number),
+                                        "timestamp": str(timestamp),
+                                        "is_annotated": "true",
+                                        "detection_count": str(len(detection_result.detected_objects))
+                                    }
+                                    
+                                    self.keyframe_repo.minio.put_object(
+                                        self.keyframe_repo.bucket,
+                                        annotated_minio_path,
+                                        f,
+                                        file_size,
+                                        content_type='image/jpeg',
+                                        metadata=metadata
+                                    )
+                                
+                                annotated_keyframes_info.append({
+                                    "frame_number": frame_number,
+                                    "timestamp": timestamp,
+                                    "minio_path": annotated_minio_path,
+                                    "original_minio_path": f"{video_id}/keyframes/frame_{frame_number:06d}.jpg",
+                                    "detection_count": len(detection_result.detected_objects),
+                                    "objects": [obj.class_name for obj in detection_result.detected_objects],
+                                    "confidence_avg": sum(obj.confidence for obj in detection_result.detected_objects) / len(detection_result.detected_objects) if detection_result.detected_objects else 0.0
+                                })
+                                
+                                logger.info(f"✅ Uploaded annotated keyframe to MinIO: {annotated_minio_path}")
+                        except Exception as e:
+                            logger.warning(f"Failed to create/upload annotated keyframe: {e}")
+                    
+                    # Process detected objects for detection_results
+                    if detection_result and detection_result.detected_objects:
                         for obj in detection_result.detected_objects:
                             detection_data = {
-                                "frame_number": getattr(frame_data, 'frame_number', i),
+                                "frame_number": frame_number,
                                 "class_name": str(obj.class_name),
                                 "confidence": float(obj.confidence),
                                 "bbox": [int(x) for x in obj.bbox[:4]],  # Convert to list of ints
                                 "center_point": [float(x) for x in obj.center_point],
                                 "area": float(obj.area),
                                 "frame_timestamp": float(obj.frame_timestamp),
-                                "detection_model": str(obj.detection_model)
+                                "detection_model": str(obj.detection_model),
+                                "annotated_minio_path": annotated_minio_path  # Link to annotated frame
                             }
                             # Apply numpy type conversion
                             detection_data = convert_numpy_types(detection_data)
                             detection_results.append(detection_data)
+            
+            # Store annotated keyframes info in MongoDB metadata
+            if annotated_keyframes_info:
+                self.video_repo.update_metadata(video_id, {
+                    "annotated_keyframes_info": annotated_keyframes_info,
+                    "annotated_keyframes_count": len(annotated_keyframes_info)
+                })
+                logger.info(f"✅ Stored {len(annotated_keyframes_info)} annotated keyframes metadata")
             
             logger.info(f"✅ Object detection completed: {len(detection_results)} detections")
             return detection_results
             
         except Exception as e:
             logger.error(f"Object detection failed: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
             return []
     
     def _create_object_events_from_detections(self, detection_results: List[Dict]) -> List[Dict]:
@@ -523,12 +799,46 @@ class DatabaseIntegratedVideoService:
             # Compressed video URL (if available)
             minio_compressed_path = meta_data.get("minio_compressed_path")
             if minio_compressed_path:
-                status_data["compressed_video_url"] = self.video_repo.get_compressed_video_presigned_url(video_id)
+                # Always use the API endpoint which will handle MinIO/local fallback
+                status_data["compressed_video_url"] = f"/api/video/compressed/{video_id}"
+                # Also try to get presigned URL as alternative
+                try:
+                    presigned_url = self.compression_service.get_compressed_video_presigned_url(video_id)
+                    if presigned_url:
+                        status_data["compressed_video_presigned_url"] = presigned_url
+                except:
+                    pass
+            else:
+                # Check if compression was completed but path not set
+                if meta_data.get("processing_status") == "completed":
+                    # Try to construct path and use API endpoint
+                    status_data["compressed_video_url"] = f"/api/video/compressed/{video_id}"
 
             # Keyframes URLs (if available)
             if meta_data.get("keyframe_count", 0) > 0:
-                keyframes_urls = self.keyframe_repo.get_video_keyframes_presigned_urls(video_id)
-                status_data["keyframes_urls"] = keyframes_urls
+                try:
+                    keyframes_urls = self.keyframe_repo.get_video_keyframes_presigned_urls(video_id)
+                    # If no URLs from MinIO, try to get from MongoDB metadata
+                    if not keyframes_urls and meta_data.get("keyframe_info"):
+                        # Generate URLs from stored metadata
+                        keyframes_urls = []
+                        for kf_info in meta_data.get("keyframe_info", []):
+                            minio_path = kf_info.get("minio_path")
+                            if minio_path:
+                                presigned_url = self.keyframe_repo.get_keyframe_presigned_url(minio_path)
+                                if presigned_url:
+                                    keyframes_urls.append({
+                                        'frame_number': kf_info.get("frame_number", 0),
+                                        'timestamp': kf_info.get("timestamp", 0.0),
+                                        'minio_path': minio_path,
+                                        'presigned_url': presigned_url,
+                                        'url': presigned_url,
+                                        'filename': minio_path.split('/')[-1]
+                                    })
+                    status_data["keyframes_urls"] = keyframes_urls
+                except Exception as e:
+                    logger.warning(f"Failed to get keyframes URLs: {e}")
+                    status_data["keyframes_urls"] = []
 
         except Exception as e:
             logger.warning(f"Failed to generate presigned URLs for video {video_id}: {e}")
@@ -545,14 +855,91 @@ class DatabaseIntegratedVideoService:
 
             # Get keyframes with presigned URLs from keyframe repository
             keyframes_urls = self.keyframe_repo.get_video_keyframes_presigned_urls(video_id)
+            
+            # Fallback: If no keyframes from MinIO, try to get from MongoDB metadata
+            if not keyframes_urls:
+                meta_data = video.get("meta_data", {})
+                keyframe_info = meta_data.get("keyframe_info", [])
+                if keyframe_info:
+                    logger.info(f"Using MongoDB metadata for keyframes: {len(keyframe_info)} keyframes")
+                    for kf_info in keyframe_info:
+                        minio_path = kf_info.get("minio_path")
+                        if minio_path:
+                            try:
+                                presigned_url = self.keyframe_repo.get_keyframe_presigned_url(minio_path)
+                                if presigned_url:
+                                    keyframes_urls.append({
+                                        'frame_number': kf_info.get("frame_number", 0),
+                                        'timestamp': kf_info.get("timestamp", 0.0),
+                                        'minio_path': minio_path,
+                                        'presigned_url': presigned_url,
+                                        'url': presigned_url,
+                                        'filename': minio_path.split('/')[-1]
+                                    })
+                            except Exception as e:
+                                logger.warning(f"Failed to generate presigned URL for {minio_path}: {e}")
+            
+            # Get events to determine which keyframes have detections
+            events = self.event_repo.get_events_by_video_id(video_id)
+            detection_events = [e for e in events if e.get("event_type", "").startswith("object_detection_")]
+            
+            # Create a map of timestamps that have detections
+            detection_timestamps = set()
+            for event in detection_events:
+                start_ms = event.get("start_timestamp_ms", 0)
+                end_ms = event.get("end_timestamp_ms", 0)
+                # Convert milliseconds to seconds and create range
+                start_sec = start_ms / 1000.0
+                end_sec = end_ms / 1000.0
+                # Add timestamps in 1-second intervals
+                for t in range(int(start_sec), int(end_sec) + 1):
+                    detection_timestamps.add(t)
+
+            # Get annotated keyframes info from metadata
+            meta_data = video.get("meta_data", {})
+            annotated_keyframes_info = meta_data.get("annotated_keyframes_info", [])
+            annotated_lookup = {kf.get("frame_number"): kf for kf in annotated_keyframes_info}
+            
+            # Enhance keyframes with detection info and annotated URLs
+            enhanced_keyframes = []
+            for kf in keyframes_urls:
+                timestamp_sec = kf.get('timestamp', 0)
+                frame_number = kf.get('frame_number', 0)
+                
+                # Check if this timestamp has detections (within 1 second tolerance)
+                has_detections = any(abs(timestamp_sec - dt) < 1.0 for dt in detection_timestamps)
+                
+                enhanced_kf = {
+                    **kf,
+                    'has_detections': has_detections,
+                    'url': kf.get('presigned_url'),  # Add url alias for compatibility
+                }
+                
+                # Add annotated frame info if available
+                if frame_number in annotated_lookup:
+                    annotated_info = annotated_lookup[frame_number]
+                    # Generate presigned URL for annotated frame
+                    try:
+                        annotated_presigned_url = self.keyframe_repo.get_keyframe_presigned_url(
+                            annotated_info.get("minio_path")
+                        )
+                        if annotated_presigned_url:
+                            enhanced_kf['annotated_url'] = annotated_presigned_url
+                            enhanced_kf['annotated_presigned_url'] = annotated_presigned_url
+                            enhanced_kf['detection_count'] = annotated_info.get("detection_count", 0)
+                            enhanced_kf['objects'] = annotated_info.get("objects", [])
+                            enhanced_kf['confidence_avg'] = annotated_info.get("confidence_avg", 0.0)
+                            enhanced_kf['has_detections'] = True  # Override if annotated frame exists
+                    except Exception as e:
+                        logger.warning(f"Failed to get presigned URL for annotated keyframe: {e}")
+                
+                enhanced_keyframes.append(enhanced_kf)
 
             # Apply filtering if requested
             if filter_detections:
-                # For now, return all keyframes since we don't have detection metadata stored
-                # In a future enhancement, we could store detection results per keyframe
-                filtered_keyframes = keyframes_urls
+                filtered_keyframes = [kf for kf in enhanced_keyframes if kf.get('has_detections', False)]
             else:
-                filtered_keyframes = keyframes_urls
+                filtered_keyframes = enhanced_keyframes
 
             # Apply limit if specified
             if limit and limit > 0:
@@ -588,6 +975,127 @@ class DatabaseIntegratedVideoService:
             "events": events,
             "total_events": len(events)
         }
+    
+    def get_video_detections(self, video_id: str, class_filter: str = None) -> Dict:
+        """Get object detections for a video from events"""
+        try:
+            # Get all events for this video
+            events = self.event_repo.get_events_by_video_id(video_id)
+            
+            # Filter events that are object detection events
+            detection_events = [e for e in events if e.get("event_type", "").startswith("object_detection_")]
+            
+            # Apply class filter if specified
+            if class_filter:
+                detection_events = [e for e in detection_events if e.get("event_type") == f"object_detection_{class_filter}"]
+            
+            # Extract detections from bounding_boxes
+            detections = []
+            for event in detection_events:
+                bboxes = event.get("bounding_boxes", {})
+                
+                # Handle different bounding_boxes structures
+                event_detections = []
+                if isinstance(bboxes, dict):
+                    event_detections = bboxes.get("detections", [])
+                elif isinstance(bboxes, list):
+                    # If bounding_boxes is a list directly
+                    event_detections = bboxes
+                
+                # Also check if detections are stored directly in event
+                if not event_detections:
+                    event_detections = event.get("detections", [])
+                
+                for det in event_detections:
+                    # Handle both dict and list formats
+                    if isinstance(det, dict):
+                        detection = {
+                            "class_name": det.get("class", det.get("class_name", "unknown")),
+                            "confidence": float(det.get("confidence", 0.0)),
+                            "bbox": det.get("bbox", [0, 0, 0, 0]),
+                            "timestamp": float(det.get("timestamp", event.get("start_timestamp_ms", 0) / 1000.0)),
+                            "event_id": event.get("event_id"),
+                            "model": det.get("model", "unknown")
+                        }
+                        detections.append(detection)
+                    elif isinstance(det, list) and len(det) >= 4:
+                        # Handle list format [x, y, width, height, class, confidence]
+                        detection = {
+                            "class_name": str(det[4]) if len(det) > 4 else "unknown",
+                            "confidence": float(det[5]) if len(det) > 5 else 0.0,
+                            "bbox": [int(det[0]), int(det[1]), int(det[0] + det[2]), int(det[1] + det[3])] if len(det) >= 4 else [0, 0, 0, 0],
+                            "timestamp": float(event.get("start_timestamp_ms", 0) / 1000.0),
+                            "event_id": event.get("event_id"),
+                            "model": "unknown"
+                        }
+                        detections.append(detection)
+                
+                # Also extract from event_type if no detections found
+                if not detections and event.get("event_type"):
+                    event_type = event.get("event_type", "")
+                    if event_type.startswith("object_detection_"):
+                        class_name = event_type.replace("object_detection_", "")
+                        detection = {
+                            "class_name": class_name,
+                            "confidence": float(event.get("confidence_score", 0.0)),
+                            "bbox": [0, 0, 0, 0],  # No bbox info available
+                            "timestamp": float(event.get("start_timestamp_ms", 0) / 1000.0),
+                            "event_id": event.get("event_id"),
+                            "model": "unknown"
+                        }
+                        detections.append(detection)
+            
+            return {
+                "video_id": video_id,
+                "detections": detections,
+                "total_detections": len(detections)
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to get detections for video {video_id}: {e}")
+            return {
+                "video_id": video_id,
+                "detections": [],
+                "total_detections": 0,
+                "error": str(e)
+            }
+    
+    def get_video_faces(self, video_id: str) -> Dict:
+        """Get detected faces for a video (through events)"""
+        try:
+            # Get all events for this video
+            events = self.event_repo.get_events_by_video_id(video_id)
+            event_ids = [e.get('event_id') for e in events if e.get('event_id')]
+            
+            if not event_ids:
+                return {
+                    "video_id": video_id,
+                    "faces": [],
+                    "total_faces": 0
+                }
+            
+            # Query detected_faces collection for faces associated with these events
+            faces_collection = self.db_manager.db.detected_faces
+            faces = list(faces_collection.find({"event_id": {"$in": event_ids}}))
+            
+            # Convert ObjectIds to strings
+            from database.models import convert_objectid_to_string
+            faces = [convert_objectid_to_string(face) for face in faces]
+            
+            return {
+                "video_id": video_id,
+                "faces": faces,
+                "total_faces": len(faces)
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to get faces for video {video_id}: {e}")
+            return {
+                "video_id": video_id,
+                "faces": [],
+                "total_faces": 0,
+                "error": str(e)
+            }
     
     def process_video_complete(self, video_path: str, video_id: str, user_id: str = None, 
                              upload_to_minio: bool = True, enable_compression: bool = True,

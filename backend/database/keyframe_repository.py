@@ -112,7 +112,10 @@ class KeyframeRepository:
         """Get presigned URLs for all keyframes of a video"""
         try:
             # List all objects in the video's keyframe directory
-            objects = self.minio.list_objects(self.bucket, prefix=f"{video_id}/")
+            # Keyframes are stored at: {video_id}/keyframes/frame_*.jpg
+            logger.info(f"🔍 Looking for keyframes in bucket '{self.bucket}' with prefix '{video_id}/keyframes/'")
+            objects = list(self.minio.list_objects(self.bucket, prefix=f"{video_id}/keyframes/", recursive=True))
+            logger.info(f"📦 Found {len(objects)} objects in MinIO for keyframes")
 
             keyframes_urls = []
             for obj in objects:
@@ -127,7 +130,27 @@ class KeyframeRepository:
                         if 'frame_' in filename:
                             frame_str = filename.split('_')[1].split('.')[0]
                             frame_number = int(frame_str)
+                            # Estimate timestamp from frame number (assuming 30 fps)
+                            timestamp = frame_number / 30.0
                     except (ValueError, IndexError):
+                        pass
+                    
+                    # Try to get metadata from MinIO object
+                    try:
+                        obj_stat = self.minio.stat_object(self.bucket, obj.object_name)
+                        if obj_stat.metadata:
+                            # Extract timestamp from metadata if available
+                            if 'timestamp' in obj_stat.metadata:
+                                try:
+                                    timestamp = float(obj_stat.metadata['timestamp'])
+                                except:
+                                    pass
+                            if 'frame_number' in obj_stat.metadata:
+                                try:
+                                    frame_number = int(obj_stat.metadata['frame_number'])
+                                except:
+                                    pass
+                    except:
                         pass
 
                     # Generate presigned URL
@@ -139,6 +162,7 @@ class KeyframeRepository:
                             'timestamp': timestamp,
                             'minio_path': obj.object_name,
                             'presigned_url': presigned_url,
+                            'url': presigned_url,  # Alias for compatibility
                             'filename': filename
                         })
 
