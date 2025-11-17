@@ -331,6 +331,20 @@ class DatabaseIntegratedVideoService:
                                     except:
                                         pass
                                     
+                                    # Get frame number from frame path if possible
+                                    frame_number = 0
+                                    try:
+                                        # Try to extract frame number from frame_path
+                                        import re
+                                        frame_match = re.search(r'frame_(\d+)', frame_path)
+                                        if frame_match:
+                                            frame_number = int(frame_match.group(1))
+                                        else:
+                                            # Estimate from timestamp (assuming 30 fps)
+                                            frame_number = int(timestamp * 30)
+                                    except:
+                                        frame_number = int(timestamp * 30)  # Fallback estimate
+                                    
                                     # Process this face_info - Save face to MongoDB detected_faces collection
                                     face_data = {
                                         'face_id': face_info.get('face_id', f"face_{uuid.uuid4().hex[:8]}"),
@@ -342,7 +356,10 @@ class DatabaseIntegratedVideoService:
                                         'person_confidence': None,
                                         'face_image_path': '',  # Initialize as empty string (schema requires string)
                                         'minio_object_key': None,
-                                        'minio_bucket': None
+                                        'minio_bucket': None,
+                                        'frame_number': frame_number,  # Store frame number to link to keyframes
+                                        'timestamp': float(timestamp),  # Store timestamp to link to keyframes
+                                        'video_id': video_id  # Store video_id for easier querying
                                     }
                                     
                                     # Upload face image to MinIO if available
@@ -722,14 +739,18 @@ class DatabaseIntegratedVideoService:
                     'original_size_bytes': result['original_size'],
                     'compressed_size_bytes': result['compressed_size'],
                     'compression_ratio': result['compression_ratio'],
-                    'output_resolution': result['output_resolution']
+                    'output_resolution': result['output_resolution'],
+                    'local_path': result.get('local_path'),  # Store local path for fallback
+                    'minio_path': result.get('minio_path')  # Store MinIO path
                 }
                 
-                # Update video metadata with compression info
+                # Update video metadata with compression info (including local path)
                 self.video_repo.update_metadata(video_id, {
-                    'compression_info': compression_info
+                    'compression_info': compression_info,
+                    'minio_compressed_path': result.get('minio_path')  # Also store at top level for easy access
                 })
                 
+                logger.info(f"✅ Stored compression info with local path: {result.get('local_path')}")
                 return result['minio_path']
             else:
                 logger.error("Video compression failed")
@@ -900,6 +921,21 @@ class DatabaseIntegratedVideoService:
             annotated_keyframes_info = meta_data.get("annotated_keyframes_info", [])
             annotated_lookup = {kf.get("frame_number"): kf for kf in annotated_keyframes_info}
             
+            # Get faces for this video to check which keyframes have faces
+            faces_data = self.get_video_faces(video_id)
+            faces = faces_data.get("faces", [])
+            
+            # Create a map of frame_numbers and timestamps that have faces
+            frames_with_faces = set()
+            timestamps_with_faces = set()
+            for face in faces:
+                face_frame = face.get('frame_number', 0)
+                face_timestamp = face.get('timestamp', 0)
+                if face_frame:
+                    frames_with_faces.add(face_frame)
+                if face_timestamp:
+                    timestamps_with_faces.add(face_timestamp)
+            
             # Enhance keyframes with detection info and annotated URLs
             enhanced_keyframes = []
             for kf in keyframes_urls:
@@ -909,9 +945,16 @@ class DatabaseIntegratedVideoService:
                 # Check if this timestamp has detections (within 1 second tolerance)
                 has_detections = any(abs(timestamp_sec - dt) < 1.0 for dt in detection_timestamps)
                 
+                # Check if this keyframe has faces (by frame_number or timestamp)
+                has_faces = (
+                    frame_number in frames_with_faces or
+                    any(abs(timestamp_sec - ft) < 0.5 for ft in timestamps_with_faces)
+                )
+                
                 enhanced_kf = {
                     **kf,
                     'has_detections': has_detections,
+                    'has_faces': has_faces,  # Add face detection flag
                     'url': kf.get('presigned_url'),  # Add url alias for compatibility
                 }
                 
@@ -932,6 +975,32 @@ class DatabaseIntegratedVideoService:
                             enhanced_kf['has_detections'] = True  # Override if annotated frame exists
                     except Exception as e:
                         logger.warning(f"Failed to get presigned URL for annotated keyframe: {e}")
+                
+                # If this keyframe has faces, prioritize showing "Face Detected" over object names
+                if has_faces:
+                    # Count faces for this keyframe
+                    face_count = sum(
+                        1 for face in faces 
+                        if (face.get('frame_number') == frame_number or 
+                            abs(face.get('timestamp', 0) - timestamp_sec) < 0.5)
+                    )
+                    enhanced_kf['face_count'] = face_count
+                    # Add "Face Detected" to objects list if not already present, and prioritize it
+                    if enhanced_kf.get('objects'):
+                        # Check if "Face" is already in objects
+                        has_face_in_objects = any('face' in str(obj).lower() for obj in enhanced_kf['objects'])
+                        if not has_face_in_objects:
+                            # Add "Face Detected" at the beginning
+                            enhanced_kf['objects'] = ['Face Detected'] + enhanced_kf['objects']
+                        else:
+                            # Move "Face Detected" to front, remove duplicates
+                            face_objects = [obj for obj in enhanced_kf['objects'] if 'face' in str(obj).lower()]
+                            other_objects = [obj for obj in enhanced_kf['objects'] if 'face' not in str(obj).lower()]
+                            enhanced_kf['objects'] = ['Face Detected'] + other_objects
+                    else:
+                        enhanced_kf['objects'] = ['Face Detected']
+                    # Update detection count to include faces
+                    enhanced_kf['detection_count'] = enhanced_kf.get('detection_count', 0) + face_count
                 
                 enhanced_keyframes.append(enhanced_kf)
 

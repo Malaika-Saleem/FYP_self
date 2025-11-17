@@ -516,15 +516,26 @@ def get_video_results_db(video_id):
         status_data = db_video_service.get_video_status(video_id)
         
         if 'error' in status_data:
+            logger.warning(f"Video not found in database: {video_id}")
             return jsonify(status_data), 404
         
-        # Only return comprehensive results if processing is completed
-        if status_data.get('status') != 'completed':
+        # Check if processing is completed (check multiple possible status fields)
+        processing_status = status_data.get('status') or status_data.get('meta_data', {}).get('processing_status', 'unknown')
+        
+        # Log status for debugging
+        logger.info(f"Video {video_id} status: {processing_status}, progress: {status_data.get('processing_progress')}")
+        
+        # Allow results even if status is not exactly 'completed' - check if we have detections/events
+        meta_data = status_data.get('meta_data', {})
+        has_detections = meta_data.get('detection_count', 0) > 0 or status_data.get('detection_count', 0) > 0
+        has_events = meta_data.get('event_count', 0) > 0 or status_data.get('event_count', 0) > 0
+        
+        if processing_status not in ['completed', 'done'] and not (has_detections or has_events):
             return jsonify({
                 'error': 'Processing not completed',
-                'current_status': status_data.get('status'),
-                'progress': status_data.get('progress', 0),
-                'message': status_data.get('message', '')
+                'current_status': processing_status,
+                'progress': status_data.get('processing_progress') or meta_data.get('processing_progress', 0),
+                'message': status_data.get('processing_message') or meta_data.get('processing_message', '')
             }), 400
         
         # Get keyframes, events, and detections
@@ -532,25 +543,33 @@ def get_video_results_db(video_id):
         events_data = db_video_service.get_video_events(video_id)
         detections_data = db_video_service.get_video_detections(video_id)
         
+        # Get compressed video URL from status
+        compressed_video_url = status_data.get('compressed_video_url') or f'/api/video/compressed/{video_id}'
+        compressed_video_available = bool(status_data.get('compressed_video_url') or status_data.get('meta_data', {}).get('minio_compressed_path'))
+        
         # Compile comprehensive results
         results = {
             'video_info': status_data,
-            'keyframes_available': len(keyframes_data['keyframes']) > 0,
-            'keyframes_count': keyframes_data['total_keyframes'],
-            'keyframes_sample': keyframes_data['keyframes'][:10],  # First 10 keyframes
-            'events_available': len(events_data['events']) > 0,
-            'events_count': events_data['total_events'],
-            'events_summary': _summarize_events(events_data['events']),
-            'detections_available': len(detections_data['detections']) > 0,
-            'detections_count': detections_data['total_detections'],
-            'detections_summary': _summarize_detections(detections_data['detections']),
-            'threat_assessment': _assess_threat_level(events_data['events'], detections_data['detections'])
+            'compressed_video_available': compressed_video_available,
+            'compressed_video_url': compressed_video_url,
+            'keyframes_available': len(keyframes_data.get('keyframes', [])) > 0,
+            'keyframes_count': keyframes_data.get('total_keyframes', 0),
+            'keyframes_sample': keyframes_data.get('keyframes', [])[:10],  # First 10 keyframes
+            'events_available': len(events_data.get('events', [])) > 0,
+            'events_count': events_data.get('total_events', 0),
+            'events_summary': _summarize_events(events_data.get('events', [])),
+            'detections_available': len(detections_data.get('detections', [])) > 0,
+            'detections_count': detections_data.get('total_detections', 0),
+            'detections_summary': _summarize_detections(detections_data.get('detections', [])),
+            'threat_assessment': _assess_threat_level(events_data.get('events', []), detections_data.get('detections', []))
         }
         
         return jsonify(results), 200
         
     except Exception as e:
         logger.error(f"Database results retrieval error: {str(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/video/upload', methods=['POST'])
@@ -1107,117 +1126,296 @@ def process_existing_video(video_id):
         'status_url': f'/api/status/{video_id}'
     }), 200
 
+@app.route('/api/debug/compressed/<video_id>', methods=['GET'])
+def debug_compressed_video(video_id):
+    """Debug endpoint to check compressed video storage"""
+    if not DATABASE_ENABLED:
+        return jsonify({'error': 'Database not enabled'}), 503
+    
+    try:
+        video_record = db_video_service.video_repo.get_video_by_id(video_id)
+        if not video_record:
+            return jsonify({'error': 'Video not found'}), 404
+        
+        meta_data = video_record.get('meta_data', {})
+        bucket = video_record.get('minio_bucket', db_video_service.video_repo.video_bucket)
+        
+        # Check MinIO
+        minio_info = {}
+        try:
+            objects = list(db_video_service.video_repo.minio.list_objects(bucket, prefix=f"compressed/{video_id}/", recursive=True))
+            minio_info['objects_found'] = len(objects)
+            minio_info['objects'] = [{'name': obj.object_name, 'size': obj.size} for obj in objects]
+        except Exception as e:
+            minio_info['error'] = str(e)
+        
+        return jsonify({
+            'video_id': video_id,
+            'bucket': bucket,
+            'minio_compressed_path': meta_data.get('minio_compressed_path'),
+            'compression_info': meta_data.get('compression_info', {}),
+            'minio_info': minio_info
+        }), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/video/<video_id>/compressed', methods=['GET'])
+@app.route('/api/video/compressed/<video_id>', methods=['GET'])
 @app.route('/api/v2/video/compressed/<video_id>', methods=['GET'])
 def serve_compressed_video(video_id):
     """Serve compressed processed video from MinIO or local storage"""
+    logger.info(f"🎬 Request to serve compressed video: {video_id}")
     try:
         # First try to get from database/MinIO
         if DATABASE_ENABLED:
             try:
                 status_data = db_video_service.get_video_status(video_id)
                 if 'error' not in status_data:
-                    # Check if we have a presigned URL
-                    if status_data.get('compressed_video_url'):
-                        # Redirect to presigned URL if it's a full URL
-                        presigned_url = status_data['compressed_video_url']
-                        if presigned_url.startswith('http'):
-                            from flask import redirect
-                            return redirect(presigned_url, code=302)
+                    logger.info(f"✅ Found video in database: {video_id}")
+                    logger.info(f"📊 Status data keys: {list(status_data.keys())}")
+                    
+                    # Get video record directly to access all fields including bucket
+                    video_record = None
+                    try:
+                        video_record = db_video_service.video_repo.get_video_by_id(video_id)
+                        if video_record:
+                            logger.info(f"📁 Retrieved video record from database")
+                    except Exception as e:
+                        logger.warning(f"Could not get video record: {e}")
                     
                     # Try to get from MinIO directly
+                    # meta_data might be nested or at root level
                     meta_data = status_data.get('meta_data', {})
-                    minio_compressed_path = meta_data.get('minio_compressed_path')
-                    if minio_compressed_path:
-                        try:
-                            # Try to get from MinIO
-                            from io import BytesIO
-                            from minio.error import S3Error
-                            
-                            # Get compressed video path from metadata
-                            minio_path = minio_compressed_path
-                            if not minio_path:
-                                minio_path = f"compressed/{video_id}/video.mp4"
-                            
-                            # Try to get from video bucket (compressed videos are in same bucket as originals)
-                            video_data = None
+                    if not meta_data and video_record:
+                        meta_data = video_record.get('meta_data', {})
+                        logger.info(f"📁 Retrieved meta_data from video record")
+                    
+                    # Get bucket from video record (should be "detectifai-videos")
+                    video_bucket = None
+                    if video_record:
+                        video_bucket = video_record.get('minio_bucket')
+                        logger.info(f"📦 Video bucket from record: {video_bucket}")
+                    
+                    # Fallback to default bucket if not in record
+                    if not video_bucket:
+                        video_bucket = db_video_service.video_repo.video_bucket
+                        logger.info(f"📦 Using default video bucket: {video_bucket}")
+                    
+                    minio_compressed_path = meta_data.get('minio_compressed_path') if meta_data else None
+                    
+                    # Also check compression_info for the path
+                    if not minio_compressed_path and meta_data:
+                        compression_info = meta_data.get('compression_info', {})
+                        minio_compressed_path = compression_info.get('minio_path')
+                    
+                    logger.info(f"📁 MinIO compressed path from metadata: {minio_compressed_path}")
+                    logger.info(f"📁 Processing status: {meta_data.get('processing_status') if meta_data else 'N/A'}")
+                    logger.info(f"📁 Full meta_data keys: {list(meta_data.keys()) if meta_data else 'N/A'}")
+                    
+                    # Always try MinIO first (even if path not in metadata, try standard path)
+                    try:
+                        from io import BytesIO
+                        from minio.error import S3Error
+                        
+                        # Get compressed video path from metadata or use standard path
+                        # Try multiple possible path formats
+                        possible_paths = []
+                        if minio_compressed_path:
+                            possible_paths.append(minio_compressed_path)
+                        possible_paths.extend([
+                            f"compressed/{video_id}/video.mp4",
+                            f"compressed/{video_id}/compressed.mp4",
+                        ])
+                        
+                        logger.info(f"🔍 Will try {len(possible_paths)} possible paths in bucket: {video_bucket}")
+                        for p in possible_paths:
+                            logger.info(f"   - {p}")
+                        
+                        video_data = None
+                        successful_path = None
+                        
+                        # Try to get from video bucket (compressed videos are in same bucket as originals)
+                        # video_bucket already set from video record above
+                        compression_bucket = db_video_service.compression_service.bucket
+                        
+                        # Try each possible path in the video bucket first
+                        logger.info(f"🔍 Trying video bucket: {video_bucket}")
+                        for minio_path in possible_paths:
                             try:
+                                logger.info(f"   Attempting: {minio_path}")
                                 video_data = db_video_service.video_repo.minio.get_object(
-                                    db_video_service.video_repo.video_bucket,
+                                    video_bucket,
                                     minio_path
                                 )
+                                successful_path = minio_path
+                                logger.info(f"✅ Found compressed video in video bucket: {video_bucket} at {minio_path}")
+                                break
                             except Exception as e1:
-                                logger.warning(f"Failed to get from video bucket {db_video_service.video_repo.video_bucket}: {e1}")
-                                # Try compression service bucket
+                                logger.debug(f"   ❌ Failed: {str(e1)[:100]}")
+                                continue
+                        
+                        # If not found in video bucket, try compression bucket
+                        if not video_data:
+                            logger.info(f"🔍 Trying compression bucket: {compression_bucket}")
+                            for minio_path in possible_paths:
                                 try:
+                                    logger.info(f"   Attempting: {minio_path}")
                                     video_data = db_video_service.compression_service.minio.get_object(
-                                        db_video_service.compression_service.bucket,
+                                        compression_bucket,
                                         minio_path
                                     )
+                                    successful_path = minio_path
+                                    logger.info(f"✅ Found compressed video in compression bucket: {compression_bucket} at {minio_path}")
+                                    break
                                 except Exception as e2:
-                                    logger.warning(f"Failed to get from compression bucket {db_video_service.compression_service.bucket}: {e2}")
-                                    raise e2
-                            
-                            if not video_data:
-                                raise Exception("Could not retrieve video from MinIO")
-                            
-                            video_bytes = video_data.read()
-                            video_data.close()
-                            video_data.release_conn()
-                            
-                            response = send_file(
-                                BytesIO(video_bytes),
-                                mimetype='video/mp4',
-                                as_attachment=False,
-                                download_name=f"{video_id}_compressed.mp4"
-                            )
-                            response.headers['Accept-Ranges'] = 'bytes'
-                            response.headers['Cache-Control'] = 'no-cache'
-                            response.headers['Access-Control-Allow-Origin'] = '*'
-                            response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
-                            response.headers['Access-Control-Allow-Headers'] = 'Range'
-                            response.headers['Content-Type'] = 'video/mp4'
-                            logger.info(f"✅ Served compressed video from MinIO for {video_id}")
-                            return response
-                        except S3Error as e:
-                            logger.warning(f"MinIO retrieval failed, trying local: {e}")
+                                    logger.debug(f"   ❌ Failed: {str(e2)[:100]}")
+                                    continue
+                        
+                        # If still not found, try listing objects to see what's available
+                        if not video_data:
+                            logger.warning(f"⚠️ Could not find video with standard paths, listing objects...")
+                            try:
+                                logger.info(f"🔍 Listing objects in {video_bucket} with prefix 'compressed/{video_id}/'")
+                                objects = list(db_video_service.video_repo.minio.list_objects(video_bucket, prefix=f"compressed/{video_id}/", recursive=True))
+                                logger.info(f"📦 Found {len(objects)} objects in video bucket")
+                                for obj in objects:
+                                    logger.info(f"   - {obj.object_name} ({obj.size} bytes)")
+                                
+                                logger.info(f"🔍 Listing objects in {compression_bucket} with prefix 'compressed/{video_id}/'")
+                                objects2 = list(db_video_service.compression_service.minio.list_objects(compression_bucket, prefix=f"compressed/{video_id}/", recursive=True))
+                                logger.info(f"📦 Found {len(objects2)} objects in compression bucket")
+                                for obj in objects2:
+                                    logger.info(f"   - {obj.object_name} ({obj.size} bytes)")
+                                
+                                # If we found objects, try the first one
+                                if objects:
+                                    actual_path = objects[0].object_name
+                                    logger.info(f"🔄 Trying actual path found: {actual_path}")
+                                    video_data = db_video_service.video_repo.minio.get_object(video_bucket, actual_path)
+                                    successful_path = actual_path
+                                elif objects2:
+                                    actual_path = objects2[0].object_name
+                                    logger.info(f"🔄 Trying actual path found: {actual_path}")
+                                    video_data = db_video_service.compression_service.minio.get_object(compression_bucket, actual_path)
+                                    successful_path = actual_path
+                            except Exception as list_err:
+                                logger.warning(f"Failed to list objects: {list_err}")
+                                import traceback
+                                logger.debug(traceback.format_exc())
+                        
+                        if not video_data:
+                            raise Exception(f"Could not retrieve video from MinIO. Tried {len(possible_paths)} paths in buckets {video_bucket} and {compression_bucket}")
+                        
+                        video_bytes = video_data.read()
+                        video_data.close()
+                        video_data.release_conn()
+                        
+                        response = send_file(
+                            BytesIO(video_bytes),
+                            mimetype='video/mp4',
+                            as_attachment=False,
+                            download_name=f"{video_id}_compressed.mp4"
+                        )
+                        response.headers['Accept-Ranges'] = 'bytes'
+                        response.headers['Cache-Control'] = 'no-cache'
+                        response.headers['Access-Control-Allow-Origin'] = '*'
+                        response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+                        response.headers['Access-Control-Allow-Headers'] = 'Range'
+                        response.headers['Content-Type'] = 'video/mp4'
+                        logger.info(f"✅ Served compressed video from MinIO for {video_id}")
+                        return response
+                    except S3Error as e:
+                        logger.warning(f"⚠️ MinIO retrieval failed (S3Error), falling back to local storage: {e}")
+                        # Don't return, continue to local fallback
+                    except Exception as e:
+                        logger.warning(f"⚠️ MinIO retrieval failed, falling back to local storage: {e}")
+                        import traceback
+                        logger.debug(traceback.format_exc())
+                        # Don't return, continue to local fallback
             except Exception as e:
-                logger.warning(f"Database lookup failed, trying local: {e}")
+                logger.warning(f"⚠️ Database lookup failed, trying local storage: {e}")
+                # Continue to local fallback
         
-        # Fallback: Find the compressed video file locally
-        output_dir = os.path.join(OUTPUT_FOLDER, video_id, 'compressed')
-        if not os.path.exists(output_dir):
-            # Try alternative location
-            output_dir = os.path.join("video_processing_outputs", "compressed", video_id)
+        # Fallback: Find the compressed video file locally (ALWAYS try this if MinIO fails)
+        logger.info(f"🔍 Searching local file system for compressed video: {video_id}")
         
-        logger.info(f"Looking for compressed video in: {output_dir}")
+        # Get the local path from compression service if available
+        local_path_from_service = None
+        if DATABASE_ENABLED:
+            try:
+                # Try to get local path from compression service result
+                video_record = db_video_service.video_repo.get_video_by_id(video_id)
+                if video_record:
+                    meta_data = video_record.get('meta_data', {})
+                    # Check if we have compression info with local path
+                    compression_info = meta_data.get('compression_info', {})
+                    if compression_info and 'local_path' in compression_info:
+                        local_path_from_service = compression_info['local_path']
+                        logger.info(f"📁 Found local path from compression info: {local_path_from_service}")
+            except Exception as e:
+                logger.debug(f"Could not get local path from service: {e}")
         
-        if os.path.exists(output_dir):
-            # Look for compressed video files
-            files = os.listdir(output_dir)
-            logger.info(f"Files in compressed directory: {files}")
-            
-            for file in files:
-                if file.endswith('.mp4'):
-                    video_path = os.path.join(output_dir, file)
-                    logger.info(f"Serving compressed video: {video_path}")
-                    response = send_file(
-                        video_path,
-                        mimetype='video/mp4',
-                        as_attachment=False,
-                        download_name=file
-                    )
-                    # Add headers for video playback and streaming
-                    response.headers['Accept-Ranges'] = 'bytes'
-                    response.headers['Cache-Control'] = 'no-cache'
-                    response.headers['Access-Control-Allow-Origin'] = '*'
-                    response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
-                    response.headers['Access-Control-Allow-Headers'] = 'Range'
-                    response.headers['Content-Type'] = 'video/mp4'
-                    return response
+        # List of possible local directories to check
+        possible_dirs = []
         
-        logger.error(f"No compressed video found for {video_id}")
-        return jsonify({'error': 'No compressed video found'}), 404
+        # Add path from compression service if available
+        if local_path_from_service and os.path.exists(local_path_from_service):
+            possible_dirs.append(os.path.dirname(local_path_from_service))
+        
+        # Add standard locations
+        possible_dirs.extend([
+            os.path.join("video_processing_outputs", "compressed", video_id),  # Standard location from compression service
+            os.path.join(OUTPUT_FOLDER, video_id, 'compressed'),
+            os.path.join("video_processing_outputs", video_id, "compressed"),
+            os.path.join("backend", "video_processing_outputs", "compressed", video_id),  # If running from root
+            os.path.join(".", "video_processing_outputs", "compressed", video_id)  # Current directory
+        ])
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_dirs = []
+        for d in possible_dirs:
+            if d not in seen:
+                seen.add(d)
+                unique_dirs.append(d)
+        
+        logger.info(f"🔍 Checking {len(unique_dirs)} possible local directories")
+        
+        for output_dir in unique_dirs:
+            logger.info(f"🔍 Checking directory: {output_dir}")
+            if os.path.exists(output_dir):
+                # Look for compressed video files
+                try:
+                    files = os.listdir(output_dir)
+                    logger.info(f"📁 Files in {output_dir}: {files}")
+                    
+                    for file in files:
+                        if file.endswith('.mp4'):
+                            video_path = os.path.join(output_dir, file)
+                            if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
+                                logger.info(f"✅ Found compressed video locally: {video_path} ({os.path.getsize(video_path)} bytes)")
+                                response = send_file(
+                                    video_path,
+                                    mimetype='video/mp4',
+                                    as_attachment=False,
+                                    download_name=file
+                                )
+                                # Add headers for video playback and streaming
+                                response.headers['Accept-Ranges'] = 'bytes'
+                                response.headers['Cache-Control'] = 'no-cache'
+                                response.headers['Access-Control-Allow-Origin'] = '*'
+                                response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+                                response.headers['Access-Control-Allow-Headers'] = 'Range'
+                                response.headers['Content-Type'] = 'video/mp4'
+                                logger.info(f"✅ Serving compressed video from local storage: {video_path}")
+                                return response
+                except Exception as dir_err:
+                    logger.warning(f"⚠️ Error reading directory {output_dir}: {dir_err}")
+                    continue
+        
+        logger.error(f"❌ No compressed video found for {video_id} in any location")
+        logger.error(f"   Checked {len(unique_dirs)} directories: {unique_dirs}")
+        return jsonify({'error': 'No compressed video found', 'video_id': video_id, 'checked_dirs': unique_dirs}), 404
         
     except Exception as e:
         logger.error(f"Error serving compressed video: {str(e)}")

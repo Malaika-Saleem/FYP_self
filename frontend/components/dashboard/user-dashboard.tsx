@@ -37,6 +37,8 @@ interface Keyframe {
   annotated_presigned_url?: string
   timestamp: number
   has_detections: boolean
+  has_faces?: boolean
+  face_count?: number
   detection_count?: number
   objects?: string[]
   confidence_avg?: number
@@ -81,6 +83,20 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (file) {
+      // Clear all previous video data when selecting a new file
+      console.log('🧹 Clearing previous video data for new upload')
+      setKeyframes([])
+      setDetectedFaces([])
+      setVideoResults(null)
+      setCompressedVideoUrl(null)
+      setCurrentVideoId(null)
+      setStatistics({
+        totalIncidents: 0,
+        activeAlerts: 0,
+        mostCommonIncident: "None",
+        mostActiveZone: "N/A"
+      })
+      
       setSelectedFile(file)
       setUploadStatus("")
       setShowUploadModal(true)
@@ -94,6 +110,15 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
   const fetchVideoResults = async (videoId: string) => {
     try {
       console.log('🔄 Fetching video results for:', videoId)
+      
+      // Clear old data if this is a different video than what's currently displayed
+      if (currentVideoId && currentVideoId !== videoId) {
+        console.log('🧹 Clearing data for different video:', currentVideoId, '->', videoId)
+        setKeyframes([])
+        setDetectedFaces([])
+        setVideoResults(null)
+        setCompressedVideoUrl(null)
+      }
       
       // Always set compressed video URL first (will fallback gracefully if not available)
       console.log('✅ Setting compressed video URL')
@@ -333,6 +358,20 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
   }
 
   const handleFileUpload = async (file: File) => {
+    // Clear all previous video data when starting a new upload
+    console.log('🧹 Clearing previous video data for new upload')
+    setKeyframes([])
+    setDetectedFaces([])
+    setVideoResults(null)
+    setCompressedVideoUrl(null)
+    setCurrentVideoId(null)
+    setStatistics({
+      totalIncidents: 0,
+      activeAlerts: 0,
+      mostCommonIncident: "None",
+      mostActiveZone: "N/A"
+    })
+    
     setUploading(true)
     setProcessing(true)
     setUploadStatus("Uploading video...")
@@ -468,7 +507,16 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
 
   const handleGenerateReport = () => {
     if (currentVideoId) {
-      setShowReportModal(true)
+      // Ensure we have fresh data for the current video
+      console.log('📊 Generating report for video:', currentVideoId)
+      // Fetch latest results before showing modal to ensure we have current video's data
+      fetchVideoResults(currentVideoId).then(() => {
+        setShowReportModal(true)
+      }).catch((error) => {
+        console.error('Failed to fetch results for report:', error)
+        // Still show modal even if fetch fails, but with warning
+        setShowReportModal(true)
+      })
     } else {
       alert("Please upload and process a video first")
     }
@@ -633,12 +681,30 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
           <CardContent>
             <div className="space-y-4">
               {videoResults && videoResults.detections_count > 0 ? (
-                <div className="flex items-center space-x-3 p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
-                  <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse"></div>
-                  <div>
-                    <span className="text-sm font-medium">Security Threat Detected</span>
-                    <p className="text-xs text-muted-foreground">{videoResults.detections_count} objects detected</p>
+                <div className="space-y-2">
+                  <div className="flex items-center space-x-3 p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
+                    <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse"></div>
+                    <div className="flex-1">
+                      <span className="text-sm font-medium">Security Threat Detected</span>
+                      <p className="text-xs text-muted-foreground">{videoResults.detections_count} objects detected</p>
+                    </div>
                   </div>
+                  {/* Show specific detection types */}
+                  {videoResults.detections_summary?.by_class && Object.keys(videoResults.detections_summary.by_class).length > 0 && (
+                    <div className="p-2 bg-muted/50 rounded-lg">
+                      <p className="text-xs font-medium mb-1">Detected Objects:</p>
+                      <div className="flex flex-wrap gap-1">
+                        {Object.entries(videoResults.detections_summary.by_class).map(([className, count]) => (
+                          <span 
+                            key={className}
+                            className="text-xs bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200 px-2 py-0.5 rounded font-medium"
+                          >
+                            {className.charAt(0).toUpperCase() + className.slice(1)}: {count as number}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="flex items-center space-x-3 p-3 bg-green-500/10 border border-green-500/20 rounded-lg">
@@ -855,7 +921,10 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
           <Card className="bg-card border-border p-6 w-full max-w-4xl max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-xl font-semibold">Security Report</h3>
+              <div>
+                <h3 className="text-xl font-semibold">Security Report</h3>
+                <p className="text-xs text-muted-foreground mt-1">Video ID: {currentVideoId.substring(0, 20)}...</p>
+              </div>
               <Button
                 variant="ghost"
                 size="sm"
@@ -912,8 +981,15 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
                             }}
                           />
                           {keyframe.has_detections && (
-                            <div className="absolute top-2 right-2 bg-red-600 text-white text-xs px-2 py-1 rounded font-bold">
-                              {keyframe.detection_count || 0} Detection{keyframe.detection_count !== 1 ? 's' : ''}
+                            <div className={`absolute top-2 right-2 text-white text-xs px-2 py-1 rounded font-bold ${
+                              keyframe.has_faces 
+                                ? 'bg-blue-600' 
+                                : 'bg-red-600'
+                            }`}>
+                              {keyframe.has_faces && keyframe.face_count 
+                                ? `${keyframe.face_count} Face${keyframe.face_count !== 1 ? 's' : ''}`
+                                : `${keyframe.detection_count || 0} Detection${keyframe.detection_count !== 1 ? 's' : ''}`
+                              }
                             </div>
                           )}
                         </div>
@@ -925,14 +1001,25 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
                             <div className="space-y-1">
                               {keyframe.objects && keyframe.objects.length > 0 && (
                                 <div className="flex flex-wrap gap-1">
-                                  {keyframe.objects.map((obj, objIdx) => (
-                                    <span 
-                                      key={objIdx}
-                                      className="text-xs bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200 px-2 py-0.5 rounded"
-                                    >
-                                      {obj}
-                                    </span>
-                                  ))}
+                                  {keyframe.objects.map((obj, objIdx) => {
+                                    // Highlight "Face Detected" with different styling
+                                    const isFace = obj.toLowerCase().includes('face')
+                                    return (
+                                      <span 
+                                        key={objIdx}
+                                        className={`text-xs px-2 py-0.5 rounded font-medium ${
+                                          isFace 
+                                            ? 'bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 border border-blue-300 dark:border-blue-700' 
+                                            : 'bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200'
+                                        }`}
+                                      >
+                                        {obj}
+                                        {isFace && keyframe.face_count && keyframe.face_count > 1 && (
+                                          <span className="ml-1">({keyframe.face_count})</span>
+                                        )}
+                                      </span>
+                                    )
+                                  })}
                                 </div>
                               )}
                               {keyframe.confidence_avg && (
