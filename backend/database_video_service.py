@@ -20,6 +20,7 @@ from config import VideoProcessingConfig
 from main_pipeline import CompleteVideoProcessingPipeline
 from core.video_processing import OptimizedVideoProcessor
 from object_detection import ObjectDetector
+from behavior_analysis_integrator import BehaviorAnalysisIntegrator
 from event_aggregation import EventDetector
 from video_segmentation import VideoSegmentationEngine
 
@@ -67,6 +68,16 @@ class DatabaseIntegratedVideoService:
             except Exception as e:
                 logger.warning(f"⚠️ Object detection initialization failed: {e}")
                 self.config.enable_object_detection = False
+        
+        # Initialize behavior analyzer if enabled
+        self.behavior_analyzer = None
+        if getattr(self.config, 'enable_behavior_analysis', False):
+            try:
+                self.behavior_analyzer = BehaviorAnalysisIntegrator(self.config)
+                logger.info("✅ Behavior analysis enabled")
+            except Exception as e:
+                logger.warning(f"⚠️ Behavior analysis initialization failed: {e}")
+                self.config.enable_behavior_analysis = False
         
         logger.info("✅ Database-integrated video service initialized")
     
@@ -352,13 +363,14 @@ class DatabaseIntegratedVideoService:
                                         'detected_at': datetime.utcnow(),
                                         'confidence_score': float(face_info.get('confidence', 0.0)),
                                         'bounding_box': face_info.get('bounding_box', []),
+                                        'bounding_boxes': face_info.get('bounding_box', []),  # Also store as bounding_boxes for compatibility
                                         'person_name': face_info.get('person_name'),
                                         'person_confidence': None,
                                         'face_image_path': '',  # Initialize as empty string (schema requires string)
                                         'minio_object_key': None,
                                         'minio_bucket': None,
                                         'frame_number': frame_number,  # Store frame number to link to keyframes
-                                        'timestamp': float(timestamp),  # Store timestamp to link to keyframes
+                                        'timestamp': float(timestamp),  # Store timestamp in seconds to link to keyframes
                                         'video_id': video_id  # Store video_id for easier querying
                                     }
                                     
@@ -1168,7 +1180,8 @@ class DatabaseIntegratedVideoService:
     
     def process_video_complete(self, video_path: str, video_id: str, user_id: str = None, 
                              upload_to_minio: bool = True, enable_compression: bool = True,
-                             enable_object_detection: bool = True, enable_event_aggregation: bool = True,
+                             enable_object_detection: bool = True, enable_behavior_analysis: bool = True,
+                             enable_event_aggregation: bool = True,
                              enable_deduplication: bool = True) -> Dict:
         """
         Complete video processing pipeline with all features
@@ -1277,6 +1290,36 @@ class DatabaseIntegratedVideoService:
                 
                 logger.info(f"✅ Found {len(detection_results)} object detections")
             
+            # Step 3b: Run behavior analysis on keyframes if enabled
+            behavior_results = []
+            behavior_events = []
+            if enable_behavior_analysis and self.behavior_analyzer:
+                logger.info("🔍 Running behavior analysis...")
+                behavior_results, behavior_events = self.behavior_analyzer.process_keyframes_with_behavior_analysis(keyframes)
+                
+                # Store behavior detections in keyframes
+                for i, keyframe in enumerate(keyframes):
+                    frame_path = keyframe.frame_data.frame_path if hasattr(keyframe, 'frame_data') else None
+                    timestamp = keyframe.frame_data.timestamp if hasattr(keyframe, 'frame_data') else 0
+                    
+                    # Find behavior detections for this frame
+                    frame_behaviors = [r for r in behavior_results if r.frame_path == frame_path and abs(r.timestamp - timestamp) < 0.1]
+                    if frame_behaviors:
+                        behavior_detections = []
+                        for behavior in frame_behaviors:
+                            behavior_dict = {
+                                "behavior_type": behavior.behavior_detected,
+                                "confidence": float(behavior.confidence),
+                                "frame_timestamp": float(behavior.timestamp),
+                                "model_used": behavior.model_used
+                            }
+                            behavior_dict = convert_numpy_types(behavior_dict)
+                            behavior_detections.append(behavior_dict)
+                        
+                        keyframe.behavior_detections = behavior_detections
+                
+                logger.info(f"✅ Found {len(behavior_results)} behavior detections, {len(behavior_events)} behavior events")
+            
             # Step 4: Event aggregation and deduplication
             events = []
             if enable_event_aggregation:
@@ -1285,6 +1328,25 @@ class DatabaseIntegratedVideoService:
                 # Group detections by type and time proximity
                 detection_events = self._aggregate_detection_events(keyframes, video_id)
                 events.extend(detection_events)
+                
+                # Add behavior events
+                if behavior_events:
+                    for behavior_event in behavior_events:
+                        event_dict = {
+                            "event_type": f"behavior_{behavior_event.behavior_type}",
+                            "start_timestamp": behavior_event.start_timestamp,
+                            "end_timestamp": behavior_event.end_timestamp,
+                            "confidence_score": float(behavior_event.confidence),
+                            "keyframes": behavior_event.keyframes,
+                            "importance_score": float(behavior_event.importance_score),
+                            "description": f"{behavior_event.behavior_type.capitalize()} detected",
+                            "detection_data": {
+                                "model_used": behavior_event.model_used,
+                                "frame_indices": behavior_event.frame_indices
+                            }
+                        }
+                        event_dict = convert_numpy_types(event_dict)
+                        events.append(event_dict)
                 
                 if enable_deduplication:
                     logger.info("🔄 Deduplicating similar events...")
@@ -1341,6 +1403,8 @@ class DatabaseIntegratedVideoService:
                 "processing_status": "completed",
                 "keyframe_count": len(keyframes),
                 "detection_count": len(detection_results),
+                "behavior_detection_count": len(behavior_results),
+                "behavior_event_count": len(behavior_events),
                 "event_count": len(events),
                 "processing_time_seconds": round(processing_time, 2),
                 "processed_at": datetime.utcnow().isoformat(),
@@ -1355,6 +1419,8 @@ class DatabaseIntegratedVideoService:
                 "processing_stats": final_meta_data,
                 "keyframes_extracted": len(keyframes),
                 "objects_detected": len(detection_results),
+                "behaviors_detected": len(behavior_results),
+                "behavior_events": len(behavior_events),
                 "events_created": len(events),
                 "processing_time": processing_time
             })

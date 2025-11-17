@@ -19,6 +19,7 @@ from datetime import datetime
 import logging
 import uuid
 import time
+import urllib.parse
 from typing import List, Dict, Any
 
 # Import DetectifAI components
@@ -1167,39 +1168,69 @@ def serve_compressed_video(video_id):
     logger.info(f"🎬 Request to serve compressed video: {video_id}")
     try:
         # First try to get from database/MinIO
+        video_record = None
+        video_exists_in_db = False
+        status_data = None
+        meta_data = {}
+        
         if DATABASE_ENABLED:
             try:
                 status_data = db_video_service.get_video_status(video_id)
                 if 'error' not in status_data:
+                    video_exists_in_db = True
                     logger.info(f"✅ Found video in database: {video_id}")
                     logger.info(f"📊 Status data keys: {list(status_data.keys())}")
                     
                     # Get video record directly to access all fields including bucket
-                    video_record = None
                     try:
                         video_record = db_video_service.video_repo.get_video_by_id(video_id)
                         if video_record:
                             logger.info(f"📁 Retrieved video record from database")
                     except Exception as e:
                         logger.warning(f"Could not get video record: {e}")
+                else:
+                    logger.warning(f"⚠️ Video not found in database status, but will still try MinIO: {video_id}")
+                    # Still try to get video record directly
+                    try:
+                        video_record = db_video_service.video_repo.get_video_by_id(video_id)
+                        if video_record:
+                            video_exists_in_db = True
+                            logger.info(f"✅ Found video record directly (status lookup failed)")
+                    except Exception as e:
+                        logger.warning(f"Could not get video record: {e}")
                     
                     # Try to get from MinIO directly
                     # meta_data might be nested or at root level
-                    meta_data = status_data.get('meta_data', {})
+                    if status_data:
+                        meta_data = status_data.get('meta_data', {})
                     if not meta_data and video_record:
                         meta_data = video_record.get('meta_data', {})
                         logger.info(f"📁 Retrieved meta_data from video record")
                     
                     # Get bucket from video record (should be "detectifai-videos")
-                    video_bucket = None
+                    # Always use detectifai-videos bucket as confirmed by user
+                    video_bucket = "detectifai-videos"
                     if video_record:
-                        video_bucket = video_record.get('minio_bucket')
-                        logger.info(f"📦 Video bucket from record: {video_bucket}")
+                        record_bucket = video_record.get('minio_bucket')
+                        if record_bucket:
+                            logger.info(f"📦 Video bucket from record: {record_bucket}")
+                            # Use record bucket if it's detectifai-videos, otherwise use default
+                            if record_bucket == "detectifai-videos":
+                                video_bucket = record_bucket
+                            else:
+                                logger.warning(f"⚠️ Record bucket ({record_bucket}) doesn't match expected (detectifai-videos), using detectifai-videos")
+                                video_bucket = "detectifai-videos"
+                        else:
+                            logger.info(f"📦 No bucket in record, using detectifai-videos")
+                    else:
+                        logger.info(f"📦 No video record, using detectifai-videos bucket")
                     
-                    # Fallback to default bucket if not in record
-                    if not video_bucket:
-                        video_bucket = db_video_service.video_repo.video_bucket
-                        logger.info(f"📦 Using default video bucket: {video_bucket}")
+                    # Ensure we're using the correct bucket
+                    if video_bucket != "detectifai-videos":
+                        logger.warning(f"⚠️ Bucket mismatch! Expected 'detectifai-videos', got '{video_bucket}'. Forcing to 'detectifai-videos'")
+                        video_bucket = "detectifai-videos"
+                    
+                    logger.info(f"📦 Final video bucket: {video_bucket}")
                     
                     minio_compressed_path = meta_data.get('minio_compressed_path') if meta_data else None
                     
@@ -1211,132 +1242,220 @@ def serve_compressed_video(video_id):
                     logger.info(f"📁 MinIO compressed path from metadata: {minio_compressed_path}")
                     logger.info(f"📁 Processing status: {meta_data.get('processing_status') if meta_data else 'N/A'}")
                     logger.info(f"📁 Full meta_data keys: {list(meta_data.keys()) if meta_data else 'N/A'}")
+            except Exception as e:
+                logger.warning(f"⚠️ Database lookup failed, but will still try MinIO: {e}")
+                import traceback
+                logger.debug(f"Database lookup traceback: {traceback.format_exc()}")
+        
+        # Always try MinIO first (even if database lookup failed, try standard path)
+        # This ensures we can serve videos even if database is temporarily unavailable
+        try:
+            from io import BytesIO
+            from minio.error import S3Error
+            
+            # Use detectifai-videos bucket as confirmed by user
+            video_bucket = "detectifai-videos"
+            
+            # Get minio_compressed_path from metadata if available
+            minio_compressed_path = meta_data.get('minio_compressed_path') if meta_data else None
+            if not minio_compressed_path and meta_data:
+                compression_info = meta_data.get('compression_info', {})
+                minio_compressed_path = compression_info.get('minio_path')
+            
+            # Get compressed video path from metadata or use standard path
+            # User confirmed: bucket is "detectifai-videos" and folder is "compressed"
+            # Standard path format: compressed/{video_id}/video.mp4
+            possible_paths = []
+            
+            # First, try the path from metadata if available
+            if minio_compressed_path:
+                # Normalize path - remove leading slash if present
+                normalized_path = minio_compressed_path.lstrip('/')
+                possible_paths.append(normalized_path)
+                logger.info(f"📁 Using path from metadata: {normalized_path}")
+            
+            # Always try the standard path format (user confirmed this is correct)
+            standard_path = f"compressed/{video_id}/video.mp4"
+            if standard_path not in possible_paths:
+                possible_paths.insert(0, standard_path)  # Try standard path first
+            
+            # Also try alternative formats as fallback
+            alternative_paths = [
+                f"compressed/{video_id}/compressed.mp4",
+            ]
+            for alt_path in alternative_paths:
+                if alt_path not in possible_paths:
+                    possible_paths.append(alt_path)
+            
+            logger.info(f"🔍 Will try {len(possible_paths)} possible paths in bucket: {video_bucket}")
+            for i, p in enumerate(possible_paths, 1):
+                logger.info(f"   {i}. {p}")
+            
+            video_data = None
+            successful_path = None
+            
+            # Try to get from video bucket (compressed videos are in same bucket as originals)
+            if DATABASE_ENABLED:
+                compression_bucket = db_video_service.compression_service.bucket
+                minio_client = db_video_service.video_repo.minio
+            else:
+                compression_bucket = video_bucket
+                # Need to create a MinIO client if database is not enabled
+                from database.config import DatabaseManager
+                db_manager = DatabaseManager()
+                minio_client = db_manager.minio_client
+            
+            # Try each possible path in the video bucket first
+            logger.info(f"🔍 Trying video bucket: {video_bucket}")
+            for minio_path in possible_paths:
+                try:
+                    logger.info(f"   Attempting: {video_bucket}/{minio_path}")
+                    # Verify bucket exists first
+                    if not minio_client.bucket_exists(video_bucket):
+                        logger.error(f"❌ Bucket '{video_bucket}' does not exist!")
+                        raise Exception(f"Bucket '{video_bucket}' does not exist")
                     
-                    # Always try MinIO first (even if path not in metadata, try standard path)
+                    video_data = minio_client.get_object(
+                        video_bucket,
+                        minio_path
+                    )
+                    successful_path = minio_path
+                    logger.info(f"✅ Found compressed video in video bucket: {video_bucket} at {minio_path}")
+                    break
+                except S3Error as s3_err:
+                    error_code = getattr(s3_err, 'code', 'Unknown')
+                    error_msg = str(s3_err)
+                    logger.warning(f"   ❌ S3Error ({error_code}): {error_msg[:200]}")
+                    if error_code == 'NoSuchKey':
+                        logger.info(f"   ℹ️ Object '{minio_path}' not found in bucket '{video_bucket}'")
+                    continue
+                except Exception as e1:
+                    error_msg = str(e1)
+                    logger.warning(f"   ❌ Failed: {error_msg[:200]}")
+                    import traceback
+                    logger.debug(f"   Traceback: {traceback.format_exc()}")
+                    continue
+            
+            # If not found in video bucket, try compression bucket (should be same, but check anyway)
+            if not video_data and compression_bucket != video_bucket and DATABASE_ENABLED:
+                logger.info(f"🔍 Trying compression bucket: {compression_bucket}")
+                compression_minio = db_video_service.compression_service.minio
+                for minio_path in possible_paths:
                     try:
-                        from io import BytesIO
-                        from minio.error import S3Error
+                        logger.info(f"   Attempting: {compression_bucket}/{minio_path}")
+                        if not compression_minio.bucket_exists(compression_bucket):
+                            logger.error(f"❌ Compression bucket '{compression_bucket}' does not exist!")
+                            continue
                         
-                        # Get compressed video path from metadata or use standard path
-                        # Try multiple possible path formats
-                        possible_paths = []
-                        if minio_compressed_path:
-                            possible_paths.append(minio_compressed_path)
-                        possible_paths.extend([
-                            f"compressed/{video_id}/video.mp4",
-                            f"compressed/{video_id}/compressed.mp4",
-                        ])
+                        video_data = compression_minio.get_object(
+                            compression_bucket,
+                            minio_path
+                        )
+                        successful_path = minio_path
+                        logger.info(f"✅ Found compressed video in compression bucket: {compression_bucket} at {minio_path}")
+                        break
+                    except S3Error as s3_err:
+                        error_code = getattr(s3_err, 'code', 'Unknown')
+                        logger.warning(f"   ❌ S3Error ({error_code}): {str(s3_err)[:200]}")
+                        continue
+                    except Exception as e2:
+                        logger.warning(f"   ❌ Failed: {str(e2)[:200]}")
+                        continue
+            elif not video_data and compression_bucket == video_bucket:
+                logger.info(f"ℹ️ Compression bucket is same as video bucket, skipping duplicate check")
+            
+            # If still not found, try listing objects to see what's available
+            if not video_data:
+                logger.warning(f"⚠️ Could not find video with standard paths, listing objects in bucket '{video_bucket}'...")
+                try:
+                    # List all objects with compressed prefix for this video
+                    search_prefix = f"compressed/{video_id}/"
+                    logger.info(f"🔍 Listing objects in '{video_bucket}' with prefix '{search_prefix}'")
+                    
+                    if not minio_client.bucket_exists(video_bucket):
+                        logger.error(f"❌ Bucket '{video_bucket}' does not exist! Cannot list objects.")
+                    else:
+                        objects = list(minio_client.list_objects(video_bucket, prefix=search_prefix, recursive=True))
+                        logger.info(f"📦 Found {len(objects)} objects in video bucket '{video_bucket}' with prefix '{search_prefix}'")
                         
-                        logger.info(f"🔍 Will try {len(possible_paths)} possible paths in bucket: {video_bucket}")
-                        for p in possible_paths:
-                            logger.info(f"   - {p}")
-                        
-                        video_data = None
-                        successful_path = None
-                        
-                        # Try to get from video bucket (compressed videos are in same bucket as originals)
-                        # video_bucket already set from video record above
-                        compression_bucket = db_video_service.compression_service.bucket
-                        
-                        # Try each possible path in the video bucket first
-                        logger.info(f"🔍 Trying video bucket: {video_bucket}")
-                        for minio_path in possible_paths:
+                        if objects:
+                            logger.info(f"📋 Available objects:")
+                            for obj in objects:
+                                logger.info(f"   - {obj.object_name} ({obj.size} bytes, modified: {obj.last_modified})")
+                            
+                            # Try the first object found
+                            actual_path = objects[0].object_name
+                            logger.info(f"🔄 Trying first object found: {actual_path}")
                             try:
-                                logger.info(f"   Attempting: {minio_path}")
-                                video_data = db_video_service.video_repo.minio.get_object(
-                                    video_bucket,
-                                    minio_path
-                                )
-                                successful_path = minio_path
-                                logger.info(f"✅ Found compressed video in video bucket: {video_bucket} at {minio_path}")
-                                break
-                            except Exception as e1:
-                                logger.debug(f"   ❌ Failed: {str(e1)[:100]}")
-                                continue
-                        
-                        # If not found in video bucket, try compression bucket
-                        if not video_data:
-                            logger.info(f"🔍 Trying compression bucket: {compression_bucket}")
-                            for minio_path in possible_paths:
-                                try:
-                                    logger.info(f"   Attempting: {minio_path}")
-                                    video_data = db_video_service.compression_service.minio.get_object(
-                                        compression_bucket,
-                                        minio_path
-                                    )
-                                    successful_path = minio_path
-                                    logger.info(f"✅ Found compressed video in compression bucket: {compression_bucket} at {minio_path}")
-                                    break
-                                except Exception as e2:
-                                    logger.debug(f"   ❌ Failed: {str(e2)[:100]}")
-                                    continue
-                        
-                        # If still not found, try listing objects to see what's available
-                        if not video_data:
-                            logger.warning(f"⚠️ Could not find video with standard paths, listing objects...")
-                            try:
-                                logger.info(f"🔍 Listing objects in {video_bucket} with prefix 'compressed/{video_id}/'")
-                                objects = list(db_video_service.video_repo.minio.list_objects(video_bucket, prefix=f"compressed/{video_id}/", recursive=True))
-                                logger.info(f"📦 Found {len(objects)} objects in video bucket")
-                                for obj in objects:
-                                    logger.info(f"   - {obj.object_name} ({obj.size} bytes)")
-                                
-                                logger.info(f"🔍 Listing objects in {compression_bucket} with prefix 'compressed/{video_id}/'")
-                                objects2 = list(db_video_service.compression_service.minio.list_objects(compression_bucket, prefix=f"compressed/{video_id}/", recursive=True))
-                                logger.info(f"📦 Found {len(objects2)} objects in compression bucket")
+                                video_data = minio_client.get_object(video_bucket, actual_path)
+                                successful_path = actual_path
+                                logger.info(f"✅ Successfully retrieved video from path: {actual_path}")
+                            except Exception as get_err:
+                                logger.error(f"❌ Failed to get object '{actual_path}': {get_err}")
+                        else:
+                            logger.warning(f"⚠️ No objects found with prefix '{search_prefix}' in bucket '{video_bucket}'")
+                            
+                            # Try listing all objects in compressed folder
+                            logger.info(f"🔍 Listing all objects in 'compressed/' folder...")
+                            all_compressed = list(minio_client.list_objects(video_bucket, prefix="compressed/", recursive=True))
+                            logger.info(f"📦 Found {len(all_compressed)} total objects in 'compressed/' folder")
+                            if all_compressed:
+                                logger.info(f"📋 Sample objects in compressed folder:")
+                                for obj in all_compressed[:10]:  # Show first 10
+                                    logger.info(f"   - {obj.object_name}")
+                    
+                    # Also check compression bucket if different
+                    if not video_data and compression_bucket != video_bucket and DATABASE_ENABLED:
+                        logger.info(f"🔍 Listing objects in compression bucket '{compression_bucket}' with prefix '{search_prefix}'")
+                        compression_minio = db_video_service.compression_service.minio
+                        if compression_minio.bucket_exists(compression_bucket):
+                            objects2 = list(compression_minio.list_objects(compression_bucket, prefix=search_prefix, recursive=True))
+                            logger.info(f"📦 Found {len(objects2)} objects in compression bucket")
+                            if objects2:
                                 for obj in objects2:
                                     logger.info(f"   - {obj.object_name} ({obj.size} bytes)")
-                                
-                                # If we found objects, try the first one
-                                if objects:
-                                    actual_path = objects[0].object_name
-                                    logger.info(f"🔄 Trying actual path found: {actual_path}")
-                                    video_data = db_video_service.video_repo.minio.get_object(video_bucket, actual_path)
-                                    successful_path = actual_path
-                                elif objects2:
-                                    actual_path = objects2[0].object_name
-                                    logger.info(f"🔄 Trying actual path found: {actual_path}")
-                                    video_data = db_video_service.compression_service.minio.get_object(compression_bucket, actual_path)
-                                    successful_path = actual_path
-                            except Exception as list_err:
-                                logger.warning(f"Failed to list objects: {list_err}")
-                                import traceback
-                                logger.debug(traceback.format_exc())
-                        
-                        if not video_data:
-                            raise Exception(f"Could not retrieve video from MinIO. Tried {len(possible_paths)} paths in buckets {video_bucket} and {compression_bucket}")
-                        
-                        video_bytes = video_data.read()
-                        video_data.close()
-                        video_data.release_conn()
-                        
-                        response = send_file(
-                            BytesIO(video_bytes),
-                            mimetype='video/mp4',
-                            as_attachment=False,
-                            download_name=f"{video_id}_compressed.mp4"
-                        )
-                        response.headers['Accept-Ranges'] = 'bytes'
-                        response.headers['Cache-Control'] = 'no-cache'
-                        response.headers['Access-Control-Allow-Origin'] = '*'
-                        response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
-                        response.headers['Access-Control-Allow-Headers'] = 'Range'
-                        response.headers['Content-Type'] = 'video/mp4'
-                        logger.info(f"✅ Served compressed video from MinIO for {video_id}")
-                        return response
-                    except S3Error as e:
-                        logger.warning(f"⚠️ MinIO retrieval failed (S3Error), falling back to local storage: {e}")
-                        # Don't return, continue to local fallback
-                    except Exception as e:
-                        logger.warning(f"⚠️ MinIO retrieval failed, falling back to local storage: {e}")
-                        import traceback
-                        logger.debug(traceback.format_exc())
-                        # Don't return, continue to local fallback
-            except Exception as e:
-                logger.warning(f"⚠️ Database lookup failed, trying local storage: {e}")
-                # Continue to local fallback
+                                actual_path = objects2[0].object_name
+                                logger.info(f"🔄 Trying actual path found: {actual_path}")
+                                video_data = compression_minio.get_object(compression_bucket, actual_path)
+                                successful_path = actual_path
+                except Exception as list_err:
+                    logger.error(f"❌ Failed to list objects: {list_err}")
+                    import traceback
+                    logger.error(f"Traceback: {traceback.format_exc()}")
+            
+            if not video_data:
+                raise Exception(f"Could not retrieve video from MinIO. Tried {len(possible_paths)} paths in buckets {video_bucket} and {compression_bucket}")
+            
+            video_bytes = video_data.read()
+            video_data.close()
+            video_data.release_conn()
+            
+            response = send_file(
+                BytesIO(video_bytes),
+                mimetype='video/mp4',
+                as_attachment=False,
+                download_name=f"{video_id}_compressed.mp4"
+            )
+            response.headers['Accept-Ranges'] = 'bytes'
+            response.headers['Cache-Control'] = 'no-cache'
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+            response.headers['Access-Control-Allow-Headers'] = 'Range'
+            response.headers['Content-Type'] = 'video/mp4'
+            logger.info(f"✅ Served compressed video from MinIO for {video_id}")
+            return response
+        except S3Error as e:
+            logger.warning(f"⚠️ MinIO retrieval failed (S3Error), falling back to local storage: {e}")
+            import traceback
+            logger.error(f"S3Error traceback: {traceback.format_exc()}")
+            # Don't return, continue to local fallback
+        except Exception as e:
+            logger.warning(f"⚠️ MinIO retrieval failed, falling back to local storage: {e}")
+            import traceback
+            logger.error(f"Exception traceback: {traceback.format_exc()}")
+            # Don't return, continue to local fallback
         
-        # Fallback: Find the compressed video file locally (ALWAYS try this if MinIO fails)
+        # Fallback: Find the compressed video file locally (ALWAYS try this, even if database lookup failed)
         logger.info(f"🔍 Searching local file system for compressed video: {video_id}")
         
         # Get the local path from compression service if available
@@ -1344,7 +1463,8 @@ def serve_compressed_video(video_id):
         if DATABASE_ENABLED:
             try:
                 # Try to get local path from compression service result
-                video_record = db_video_service.video_repo.get_video_by_id(video_id)
+                if not video_record:
+                    video_record = db_video_service.video_repo.get_video_by_id(video_id)
                 if video_record:
                     meta_data = video_record.get('meta_data', {})
                     # Check if we have compression info with local path
@@ -1352,6 +1472,16 @@ def serve_compressed_video(video_id):
                     if compression_info and 'local_path' in compression_info:
                         local_path_from_service = compression_info['local_path']
                         logger.info(f"📁 Found local path from compression info: {local_path_from_service}")
+                    # Also check for compressed_path in compression_info (alternative field name)
+                    elif compression_info and 'compressed_path' in compression_info:
+                        local_path_from_service = compression_info['compressed_path']
+                        logger.info(f"📁 Found local path from compression_info.compressed_path: {local_path_from_service}")
+                    # Also check minio_compressed_path - might be a local path
+                    elif meta_data.get('minio_compressed_path'):
+                        potential_path = meta_data.get('minio_compressed_path')
+                        if os.path.exists(potential_path) and not potential_path.startswith('compressed/'):
+                            local_path_from_service = potential_path
+                            logger.info(f"📁 Found local path from minio_compressed_path: {local_path_from_service}")
             except Exception as e:
                 logger.debug(f"Could not get local path from service: {e}")
         
@@ -1359,17 +1489,44 @@ def serve_compressed_video(video_id):
         possible_dirs = []
         
         # Add path from compression service if available
-        if local_path_from_service and os.path.exists(local_path_from_service):
-            possible_dirs.append(os.path.dirname(local_path_from_service))
+        if local_path_from_service:
+            if os.path.exists(local_path_from_service):
+                possible_dirs.append(os.path.dirname(local_path_from_service))
+            elif os.path.exists(local_path_from_service):
+                # If it's a file path, use its directory
+                possible_dirs.append(os.path.dirname(local_path_from_service))
         
-        # Add standard locations
+        # Add standard locations (check multiple possible locations)
         possible_dirs.extend([
             os.path.join("video_processing_outputs", "compressed", video_id),  # Standard location from compression service
             os.path.join(OUTPUT_FOLDER, video_id, 'compressed'),
             os.path.join("video_processing_outputs", video_id, "compressed"),
             os.path.join("backend", "video_processing_outputs", "compressed", video_id),  # If running from root
-            os.path.join(".", "video_processing_outputs", "compressed", video_id)  # Current directory
+            os.path.join(".", "video_processing_outputs", "compressed", video_id),  # Current directory
+            os.path.join("video_processing_outputs", "compressed"),  # Check root compressed dir
+            os.path.join(OUTPUT_FOLDER, "compressed", video_id),  # Alternative location
         ])
+        
+        # Also check if local_path_from_service is a direct file path
+        if local_path_from_service and os.path.exists(local_path_from_service) and os.path.isfile(local_path_from_service):
+            logger.info(f"✅ Found compressed video file directly: {local_path_from_service}")
+            try:
+                response = send_file(
+                    local_path_from_service,
+                    mimetype='video/mp4',
+                    as_attachment=False,
+                    download_name=os.path.basename(local_path_from_service)
+                )
+                response.headers['Accept-Ranges'] = 'bytes'
+                response.headers['Cache-Control'] = 'no-cache'
+                response.headers['Access-Control-Allow-Origin'] = '*'
+                response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+                response.headers['Access-Control-Allow-Headers'] = 'Range'
+                response.headers['Content-Type'] = 'video/mp4'
+                logger.info(f"✅ Serving compressed video from direct path: {local_path_from_service}")
+                return response
+            except Exception as e:
+                logger.warning(f"Failed to serve from direct path: {e}")
         
         # Remove duplicates while preserving order
         seen = set()
@@ -1415,7 +1572,33 @@ def serve_compressed_video(video_id):
         
         logger.error(f"❌ No compressed video found for {video_id} in any location")
         logger.error(f"   Checked {len(unique_dirs)} directories: {unique_dirs}")
-        return jsonify({'error': 'No compressed video found', 'video_id': video_id, 'checked_dirs': unique_dirs}), 404
+        
+        # Use video_exists_in_db from earlier check, or check again if not set
+        if not video_exists_in_db and DATABASE_ENABLED:
+            try:
+                if not video_record:
+                    video_record = db_video_service.video_repo.get_video_by_id(video_id)
+                video_exists_in_db = video_record is not None
+            except Exception as e:
+                logger.warning(f"Could not check if video exists: {e}")
+        
+        if not video_exists_in_db:
+            logger.error(f"❌ Video {video_id} does not exist in database")
+            return jsonify({'error': 'Video not found', 'video_id': video_id}), 404
+        else:
+            processing_status = 'unknown'
+            if video_record:
+                processing_status = video_record.get('meta_data', {}).get('processing_status', 'unknown')
+            logger.error(f"❌ Video {video_id} exists but compressed video not found")
+            logger.error(f"   Processing status: {processing_status}")
+            logger.error(f"   Checked {len(unique_dirs)} directories: {unique_dirs}")
+            return jsonify({
+                'error': 'Compressed video not found', 
+                'video_id': video_id, 
+                'checked_dirs': unique_dirs,
+                'processing_status': processing_status,
+                'message': 'Video exists but compressed version not available. Processing may still be in progress or compression may have failed.'
+            }), 404
         
     except Exception as e:
         logger.error(f"Error serving compressed video: {str(e)}")
@@ -1738,21 +1921,80 @@ def search_person_by_image():
                 threshold=threshold
             )
             
-            # Format results for frontend
+            # Format results for frontend and enrich with event/video info from MongoDB
             formatted_results = []
             for result in search_results:
+                face_id = result['face_id']
+                event_id = None
+                video_id = None
+                start_timestamp = result.get('timestamp', 0.0)
+                end_timestamp = start_timestamp + 5.0  # Default 5 second clip
+                
+                # Try to get event_id and video_id from MongoDB
+                if DATABASE_ENABLED:
+                    try:
+                        # Query detected_faces collection for this face_id
+                        faces_collection = db_video_service.db_manager.db.detected_faces
+                        face_doc = faces_collection.find_one({"face_id": face_id})
+                        
+                        if face_doc:
+                            event_id = face_doc.get('event_id')
+                            
+                            # Query events collection for video_id
+                            if event_id:
+                                events_collection = db_video_service.db_manager.db.events
+                                event_doc = events_collection.find_one({"event_id": event_id})
+                                
+                                if event_doc:
+                                    video_id = event_doc.get('video_id')
+                                    # Get actual timestamps from event
+                                    start_timestamp = event_doc.get('start_timestamp_ms', 0) / 1000.0
+                                    end_timestamp = event_doc.get('end_timestamp_ms', 0) / 1000.0
+                    except Exception as e:
+                        logger.warning(f"Could not fetch event/video info for face {face_id}: {e}")
+                
+                # Get face detections for this face_id to enable annotation
+                face_detections_count = 0
+                if DATABASE_ENABLED and face_id:
+                    try:
+                        faces_collection = db_video_service.db_manager.db.detected_faces
+                        if video_id:
+                            face_detections_count = faces_collection.count_documents({
+                                "face_id": face_id,
+                                "video_id": video_id
+                            })
+                        elif event_id:
+                            face_detections_count = faces_collection.count_documents({
+                                "face_id": face_id,
+                                "event_id": event_id
+                            })
+                    except Exception as e:
+                        logger.warning(f"Could not count face detections: {e}")
+                
                 formatted_result = {
-                    'id': result['face_id'],
+                    'id': face_id,
+                    'face_id': face_id,
+                    'event_id': event_id,
+                    'video_id': video_id,
                     'person_name': result['person_name'],
                     'confidence': round(result['similarity_score'], 3),
                     'person_confidence': round(result['person_confidence'], 3) if result['person_confidence'] else 0.0,
                     'timestamp': result['timestamp'],
+                    'start_timestamp': start_timestamp,
+                    'end_timestamp': end_timestamp,
                     'event_context': result['event_context'],
                     'detection_context': result['detection_context'],
-                    'thumbnail': f"/api/face-image/{result['face_id']}" if result['face_image_path'] else None,
+                    'thumbnail': f"/api/face-image/{face_id}" if result['face_image_path'] else None,
                     'description': f"{result['person_name']} detected in {result['detection_context'].lower()}",
                     'zone': 'Security Zone',  # Placeholder
-                    'has_face_image': result['face_image_path'] is not None
+                    'has_face_image': result['face_image_path'] is not None,
+                    'clip_available': event_id is not None and video_id is not None,
+                    'annotated_clip_available': face_detections_count > 0 and event_id is not None and video_id is not None,
+                    'annotated_clip_url': (
+                        f"/api/event/clip/{event_id}/annotated?face_id={face_id}&person_name={urllib.parse.quote(result['person_name'])}" 
+                        if (event_id and face_id and result.get('person_name'))
+                        else (f"/api/event/clip/{event_id}/annotated?face_id={face_id}" if (event_id and face_id) else None)
+                    )
                 }
                 formatted_results.append(formatted_result)
             
@@ -1788,14 +2030,307 @@ def search_person_by_image():
             'error': f'Internal server error: {str(e)}'
         }), 500
 
+@app.route('/api/event/clip/<event_id>/annotated', methods=['GET'])
+def get_annotated_event_clip(event_id):
+    """
+    Generate and serve annotated event clip with face bounding boxes for a specific person
+    Query params: face_id (required), person_name (optional)
+    """
+    try:
+        if not DATABASE_ENABLED:
+            return jsonify({'error': 'Database not enabled'}), 500
+        
+        face_id = request.args.get('face_id')
+        person_name = request.args.get('person_name')
+        
+        if not face_id:
+            return jsonify({'error': 'face_id parameter is required'}), 400
+        
+        # Get event from database
+        events_collection = db_video_service.db_manager.db.events
+        event = events_collection.find_one({"event_id": event_id})
+        
+        if not event:
+            return jsonify({'error': 'Event not found'}), 404
+        
+        video_id = event.get('video_id')
+        start_timestamp_ms = event.get('start_timestamp_ms', 0)
+        end_timestamp_ms = event.get('end_timestamp_ms', 0)
+        
+        start_time = start_timestamp_ms / 1000.0
+        end_time = end_timestamp_ms / 1000.0
+        
+        # Get all face detections for this face_id in this video
+        faces_collection = db_video_service.db_manager.db.detected_faces
+        
+        # Try to get face detections with video_id first
+        face_detections = list(faces_collection.find({
+            "face_id": face_id,
+            "video_id": video_id
+        }))
+        
+        if not face_detections:
+            # Fallback: try to get from event_id
+            face_detections = list(faces_collection.find({
+                "face_id": face_id,
+                "event_id": event_id
+            }))
+        
+        if not face_detections:
+            # Last resort: get all detections for this face_id
+            face_detections = list(faces_collection.find({
+                "face_id": face_id
+            }))
+        
+        logger.info(f"Found {len(face_detections)} face detections for face_id {face_id}")
+        
+        # Get video path (same logic as get_event_clip)
+        video_record = db_video_service.video_repo.get_video_by_id(video_id)
+        if not video_record:
+            return jsonify({'error': 'Video not found'}), 404
+        
+        video_path = None
+        minio_key = video_record.get('minio_object_key')
+        if minio_key:
+            try:
+                import tempfile
+                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
+                temp_path = temp_file.name
+                temp_file.close()
+                
+                db_video_service.video_repo.minio.fget_object(
+                    video_record.get('minio_bucket', db_video_service.video_repo.video_bucket),
+                    minio_key,
+                    temp_path
+                )
+                video_path = temp_path
+            except Exception as e:
+                logger.warning(f"Could not get video from MinIO: {e}")
+        
+        if not video_path:
+            meta_data = video_record.get('meta_data', {})
+            compressed_path = meta_data.get('minio_compressed_path')
+            if compressed_path and os.path.exists(compressed_path):
+                video_path = compressed_path
+            else:
+                file_path = video_record.get('file_path')
+                if file_path and os.path.exists(file_path):
+                    video_path = file_path
+                else:
+                    uploads_path = os.path.join(UPLOAD_FOLDER, video_id, 'video.mp4')
+                    if os.path.exists(uploads_path):
+                        video_path = uploads_path
+        
+        if not video_path or not os.path.exists(video_path):
+            return jsonify({'error': 'Video file not found'}), 404
+        
+        # Convert face detections to list of dicts
+        from database.models import convert_objectid_to_string
+        face_detections_list = [convert_objectid_to_string(det) for det in face_detections]
+        
+        # Generate annotated clip
+        from event_clip_generator import EventClipGenerator
+        clip_generator = EventClipGenerator()
+        clip_path = clip_generator.extract_annotated_clip(
+            video_path, start_time, end_time, face_id, face_detections_list, video_id, person_name
+        )
+        
+        if not clip_path or not os.path.exists(clip_path):
+            return jsonify({'error': 'Failed to generate annotated clip'}), 500
+        
+        # Serve the clip
+        return send_file(clip_path, mimetype='video/mp4')
+        
+    except Exception as e:
+        logger.error(f"Error generating annotated event clip: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/event/clip/<event_id>', methods=['GET'])
+def get_event_clip(event_id):
+    """
+    Generate and serve event clip for viewing/playing
+    """
+    try:
+        if not DATABASE_ENABLED:
+            return jsonify({'error': 'Database not enabled'}), 500
+        
+        # Get event from database
+        events_collection = db_video_service.db_manager.db.events
+        event = events_collection.find_one({"event_id": event_id})
+        
+        if not event:
+            return jsonify({'error': 'Event not found'}), 404
+        
+        video_id = event.get('video_id')
+        start_timestamp_ms = event.get('start_timestamp_ms', 0)
+        end_timestamp_ms = event.get('end_timestamp_ms', 0)
+        
+        start_time = start_timestamp_ms / 1000.0
+        end_time = end_timestamp_ms / 1000.0
+        
+        # Get video path
+        video_record = db_video_service.video_repo.get_video_by_id(video_id)
+        if not video_record:
+            return jsonify({'error': 'Video not found'}), 404
+        
+        # Try to get video path from MinIO or local storage
+        video_path = None
+        
+        # Try MinIO first
+        minio_key = video_record.get('minio_object_key')
+        if minio_key:
+            try:
+                # Download from MinIO to temp file
+                import tempfile
+                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
+                temp_path = temp_file.name
+                temp_file.close()
+                
+                db_video_service.video_repo.minio.fget_object(
+                    video_record.get('minio_bucket', db_video_service.video_repo.video_bucket),
+                    minio_key,
+                    temp_path
+                )
+                video_path = temp_path
+            except Exception as e:
+                logger.warning(f"Could not get video from MinIO: {e}")
+        
+        # Fallback to local path
+        if not video_path:
+            # Try compressed video first
+            meta_data = video_record.get('meta_data', {})
+            compressed_path = meta_data.get('minio_compressed_path')
+            if compressed_path and os.path.exists(compressed_path):
+                video_path = compressed_path
+            else:
+                # Try original video path
+                file_path = video_record.get('file_path')
+                if file_path and os.path.exists(file_path):
+                    video_path = file_path
+                else:
+                    # Try uploads folder
+                    uploads_path = os.path.join(UPLOAD_FOLDER, video_id, 'video.mp4')
+                    if os.path.exists(uploads_path):
+                        video_path = uploads_path
+        
+        if not video_path or not os.path.exists(video_path):
+            return jsonify({'error': 'Video file not found'}), 404
+        
+        # Generate clip
+        from event_clip_generator import EventClipGenerator
+        clip_generator = EventClipGenerator()
+        clip_path = clip_generator.extract_clip(
+            video_path, start_time, end_time, event_id, video_id
+        )
+        
+        if not clip_path or not os.path.exists(clip_path):
+            return jsonify({'error': 'Failed to generate clip'}), 500
+        
+        # Serve the clip
+        return send_file(clip_path, mimetype='video/mp4')
+        
+    except Exception as e:
+        logger.error(f"Error generating event clip: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/event/clip/<event_id>/download', methods=['GET'])
+def download_event_clip(event_id):
+    """
+    Download event clip
+    """
+    try:
+        if not DATABASE_ENABLED:
+            return jsonify({'error': 'Database not enabled'}), 500
+        
+        # Get event from database
+        events_collection = db_video_service.db_manager.db.events
+        event = events_collection.find_one({"event_id": event_id})
+        
+        if not event:
+            return jsonify({'error': 'Event not found'}), 404
+        
+        video_id = event.get('video_id')
+        start_timestamp_ms = event.get('start_timestamp_ms', 0)
+        end_timestamp_ms = event.get('end_timestamp_ms', 0)
+        
+        start_time = start_timestamp_ms / 1000.0
+        end_time = end_timestamp_ms / 1000.0
+        
+        # Get video path (same logic as get_event_clip)
+        video_record = db_video_service.video_repo.get_video_by_id(video_id)
+        if not video_record:
+            return jsonify({'error': 'Video not found'}), 404
+        
+        video_path = None
+        minio_key = video_record.get('minio_object_key')
+        if minio_key:
+            try:
+                import tempfile
+                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
+                temp_path = temp_file.name
+                temp_file.close()
+                
+                db_video_service.video_repo.minio.fget_object(
+                    video_record.get('minio_bucket', db_video_service.video_repo.video_bucket),
+                    minio_key,
+                    temp_path
+                )
+                video_path = temp_path
+            except Exception as e:
+                logger.warning(f"Could not get video from MinIO: {e}")
+        
+        if not video_path:
+            meta_data = video_record.get('meta_data', {})
+            compressed_path = meta_data.get('minio_compressed_path')
+            if compressed_path and os.path.exists(compressed_path):
+                video_path = compressed_path
+            else:
+                file_path = video_record.get('file_path')
+                if file_path and os.path.exists(file_path):
+                    video_path = file_path
+                else:
+                    uploads_path = os.path.join(UPLOAD_FOLDER, video_id, 'video.mp4')
+                    if os.path.exists(uploads_path):
+                        video_path = uploads_path
+        
+        if not video_path or not os.path.exists(video_path):
+            return jsonify({'error': 'Video file not found'}), 404
+        
+        # Generate clip
+        from event_clip_generator import EventClipGenerator
+        clip_generator = EventClipGenerator()
+        clip_path = clip_generator.extract_clip(
+            video_path, start_time, end_time, event_id, video_id
+        )
+        
+        if not clip_path or not os.path.exists(clip_path):
+            return jsonify({'error': 'Failed to generate clip'}), 500
+        
+        # Serve as download
+        return send_file(clip_path, mimetype='video/mp4', as_attachment=True, 
+                        download_name=f"event_{event_id}_clip.mp4")
+        
+    except Exception as e:
+        logger.error(f"Error downloading event clip: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/face-image/<face_id>')
 def get_face_image(face_id):
     """
     Serve face images for the search results.
     """
     try:
-        # Construct face image path
-        face_image_path = os.path.join('model', 'faces', f"{face_id}.jpg")
+        # Construct face image path using absolute path
+        # BASE_DIR is project root, so model/faces should be at project root
+        # Try project root first
+        face_image_path = os.path.join(BASE_DIR, 'model', 'faces', f"{face_id}.jpg")
+        if not os.path.exists(face_image_path):
+            # Fallback to backend/model/faces (if model is in backend directory)
+            backend_dir = os.path.dirname(os.path.abspath(__file__))
+            face_image_path = os.path.join(backend_dir, 'model', 'faces', f"{face_id}.jpg")
+        if not os.path.exists(face_image_path):
+            # Final fallback to relative path from current working directory
+            face_image_path = os.path.join('model', 'faces', f"{face_id}.jpg")
         
         if not os.path.exists(face_image_path):
             # Return a placeholder or 404

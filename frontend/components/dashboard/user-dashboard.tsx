@@ -2,7 +2,7 @@
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Search, Upload, Play, Pause, SkipBack, SkipForward, Volume2, FileText, AlertTriangle, Loader2, X } from "lucide-react"
+import { Search, Upload, Play, Pause, SkipBack, SkipForward, Volume2, FileText, AlertTriangle, Loader2, X, ImageIcon } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { useRouter } from "next/navigation"
 import { useState, useRef, useEffect } from "react"
@@ -400,6 +400,10 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
       const videoId = data.video_id
       setUploadStatus(`✅ Upload successful! Processing video...`)
       setCurrentVideoId(videoId)
+      
+      // Immediately set compressed video URL (will be updated when processing completes)
+      console.log('🎬 Setting initial compressed video URL for:', videoId)
+      setCompressedVideoUrl(`/api/video/compressed/${videoId}`)
 
       // Poll for processing completion
       pollIntervalRef.current = setInterval(async () => {
@@ -456,6 +460,11 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
             } catch (fetchError) {
               console.error('Failed to fetch results:', fetchError)
               setUploadStatus("⚠️ Processing complete, but failed to load results")
+              // Still try to set compressed video URL even if fetch fails
+              if (videoId) {
+                console.log('🔄 Setting compressed video URL as fallback')
+                setCompressedVideoUrl(`/api/video/compressed/${videoId}`)
+              }
             }
             
             // Close modal after results are fetched
@@ -545,8 +554,16 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-5 h-5" />
               <Input
                 placeholder="Describe what you're looking for..."
-                className="w-full pl-10 py-3"
+                className="w-full pl-10 pr-10 py-3"
               />
+              <button
+                type="button"
+                onClick={() => router.push("/search")}
+                className="absolute right-3 top-1/2 transform -translate-y-1/2 text-muted-foreground hover:text-primary transition-colors"
+                title="Search by image"
+              >
+                <ImageIcon className="w-5 h-5" />
+              </button>
             </div>
             <Button
               onClick={handleSearchClick}
@@ -600,15 +617,50 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
                     console.error('❌ Video load error:', e)
                     const videoEl = e.target as HTMLVideoElement
                     const error = videoEl.error
-                    if (error) {
-                      console.error('Video error code:', error.code)
-                      console.error('Video error message:', error.message)
+                    console.error('Video error details:', {
+                      error: error ? {
+                        code: error.code,
+                        message: error.message
+                      } : null,
+                      networkState: videoEl.networkState,
+                      readyState: videoEl.readyState,
+                      src: videoEl.src,
+                      currentSrc: videoEl.currentSrc
+                    })
+                    
+                    // Try to reload or use alternative source
+                    if (error && error.code === 4) {
+                      console.log('🔄 Media source error, trying to reload...')
+                      setTimeout(() => {
+                        if (videoEl.src && currentVideoId) {
+                          // Try reloading with a fresh URL
+                          const newUrl = `/api/video/compressed/${currentVideoId}?t=${Date.now()}`
+                          console.log('🔄 Attempting reload with:', newUrl)
+                          videoEl.src = newUrl
+                          videoEl.load()
+                        }
+                      }, 1000)
                     }
-                    // Don't hide the video element, just log the error
-                    // The video element will show its own error state
                   }}
                   onLoadStart={() => {
-                    console.log('🔄 Video loading started')
+                    console.log('🔄 Video load started:', compressedVideoUrl)
+                  }}
+                  onWaiting={() => {
+                    console.log('⏳ Video waiting for data...')
+                  }}
+                  onStalled={() => {
+                    console.log('⚠️ Video stalled, trying to recover...')
+                  }}
+                  onProgress={() => {
+                    const videoEl = videoRef.current
+                    if (videoEl && videoEl.buffered.length > 0) {
+                      const buffered = videoEl.buffered.end(videoEl.buffered.length - 1)
+                      const duration = videoEl.duration
+                      if (duration > 0) {
+                        const percent = (buffered / duration) * 100
+                        console.log(`📊 Video buffered: ${percent.toFixed(1)}%`)
+                      }
+                    }
                   }}
                 >
                   <source src={compressedVideoUrl} type="video/mp4" />

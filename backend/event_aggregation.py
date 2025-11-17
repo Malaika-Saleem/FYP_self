@@ -321,6 +321,60 @@ class EventDetector:
         
         return standard_events
     
+    def convert_behavior_events_to_standard_format(self, behavior_events: List) -> List[Event]:
+        """Convert behavior events from behavior analysis module to standard Event format"""
+        standard_events = []
+        
+        for behavior_event in behavior_events:
+            # Handle both dataclass and dict formats
+            if hasattr(behavior_event, 'behavior_type'):
+                # Dataclass format (from BehaviorEvent)
+                event = Event(
+                    event_id=behavior_event.event_id,
+                    start_timestamp=behavior_event.start_timestamp,
+                    end_timestamp=behavior_event.end_timestamp,
+                    event_type=f"behavior_{behavior_event.behavior_type}",
+                    confidence=behavior_event.confidence,
+                    keyframes=behavior_event.keyframes,
+                    importance_score=behavior_event.importance_score,
+                    motion_intensity=0.0,  # Behavior events don't have motion intensity
+                    description=f"{behavior_event.behavior_type.capitalize()} detected (confidence: {behavior_event.confidence:.2f})",
+                    # Use object_class field to store behavior type for consistency
+                    object_class=behavior_event.behavior_type,
+                    detection_count=len(behavior_event.frame_indices),
+                    max_confidence=behavior_event.confidence,
+                    is_object_event=False,  # Behavior events are separate from object events
+                    detection_details=[{
+                        'model_used': behavior_event.model_used,
+                        'frame_indices': behavior_event.frame_indices
+                    }]
+                )
+            else:
+                # Dict format (fallback)
+                event = Event(
+                    event_id=behavior_event.get('event_id', f"behavior_{len(standard_events)}"),
+                    start_timestamp=behavior_event.get('start_timestamp', 0.0),
+                    end_timestamp=behavior_event.get('end_timestamp', 0.0),
+                    event_type=f"behavior_{behavior_event.get('behavior_type', 'unknown')}",
+                    confidence=behavior_event.get('confidence', 0.0),
+                    keyframes=behavior_event.get('keyframes', []),
+                    importance_score=behavior_event.get('importance_score', 0.0),
+                    motion_intensity=0.0,
+                    description=behavior_event.get('description', 'Behavior detected'),
+                    object_class=behavior_event.get('behavior_type', ''),
+                    detection_count=len(behavior_event.get('frame_indices', [])),
+                    max_confidence=behavior_event.get('confidence', 0.0),
+                    is_object_event=False,
+                    detection_details=[{
+                        'model_used': behavior_event.get('model_used', 'unknown'),
+                        'frame_indices': behavior_event.get('frame_indices', [])
+                    }]
+                )
+            
+            standard_events.append(event)
+        
+        return standard_events
+    
     def assess_threat_level(self, event: Event) -> str:
         """Assess threat level for events, particularly object-based events"""
         if not event.is_object_event:

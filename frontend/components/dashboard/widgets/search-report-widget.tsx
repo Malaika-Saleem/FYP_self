@@ -1,15 +1,17 @@
 "use client"
 
 import { useState } from "react"
+import { useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Search, Camera, FileText, Download, Filter } from "lucide-react"
+import { Search, Camera, FileText, Download, Filter, ImageIcon } from "lucide-react"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
 
 export function SearchReportWidget() {
+  const router = useRouter()
   const [searchQuery, setSearchQuery] = useState("")
   const [isReportModalOpen, setIsReportModalOpen] = useState(false)
 
@@ -31,18 +33,27 @@ export function SearchReportWidget() {
           <CardDescription>Use natural language to find specific moments in your surveillance footage</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="flex space-x-2">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-4 h-4" />
             <Input
               placeholder="Search incidents, zones, or behaviours..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyPress={(e) => e.key === "Enter" && handleSearch()}
+              className="pl-10 pr-10"
             />
-            <Button size="icon" variant="outline">
+            <button
+              type="button"
+              onClick={() => router.push("/search")}
+              className="absolute right-3 top-1/2 transform -translate-y-1/2 text-muted-foreground hover:text-primary transition-colors"
+              title="Search by image"
+            >
+              <ImageIcon className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="flex space-x-2">
+            <Button size="icon" variant="outline" onClick={() => router.push("/search")}>
               <Filter className="h-4 w-4" />
-            </Button>
-            <Button size="icon" variant="outline">
-              <Camera className="h-4 w-4" />
             </Button>
           </div>
           <div className="flex flex-wrap gap-2">

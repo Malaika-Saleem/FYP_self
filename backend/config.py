@@ -178,6 +178,29 @@ class VideoProcessingConfig:
     # Object event importance multiplier
     object_event_importance_multiplier: float = 2.0
     
+    # ===== BEHAVIOR ANALYSIS PARAMETERS =====
+    # Configuration for behavior/action recognition (fighting, accidents, climbing)
+    
+    # Enable behavior analysis
+    enable_behavior_analysis: bool = False
+    
+    # Behavior analysis models directory
+    behavior_models_dir: str = os.path.join(os.path.dirname(__file__), "behavior_analysis")
+    
+    # Behavior detection confidence threshold (0.3-0.8)
+    behavior_detection_confidence: float = 0.5
+    
+    # Temporal window for grouping behavior detections into events (seconds)
+    behavior_event_temporal_window: float = 5.0
+    
+    # Behavior event importance multiplier
+    behavior_event_importance_multiplier: float = 2.5
+    
+    # Enable specific behavior types
+    enable_fighting_detection: bool = True
+    enable_accident_detection: bool = True
+    enable_climbing_detection: bool = True
+    
     # Parallel processing workers (1-8): More workers = faster but more memory
     num_workers: int = 4
 
@@ -245,7 +268,12 @@ def get_security_focused_config() -> VideoProcessingConfig:
         weapon_detection_confidence=0.5,  # Balanced for weapons
         object_event_temporal_window=8.0, # Longer window for complex events
         enable_object_annotation=True,
-        object_event_importance_multiplier=3.0  # High importance for security events
+        object_event_importance_multiplier=3.0,  # High importance for security events
+        # Enhanced behavior analysis for security
+        enable_behavior_analysis=True,
+        behavior_detection_confidence=0.4,  # Lower threshold for better recall
+        behavior_event_temporal_window=8.0,  # Longer window for complex events
+        behavior_event_importance_multiplier=3.0  # High importance for security events
     )
 
 # ===== PARAMETER ADJUSTMENT GUIDE =====

@@ -22,6 +22,7 @@ interface VideoResults {
   video_id: string
   compressed_video_available: boolean
   compressed_video_url?: string
+  processing_status?: string
   keyframes_available: boolean
   keyframes_count?: number
   keyframes_url?: string
@@ -260,12 +261,12 @@ export default function VideoResults({ params }: { params: { videoId: string } }
         </div>
 
         {/* Processed Video with Custom Player */}
-        {results?.compressed_video_available && (
+        {(results?.compressed_video_available || results?.processing_status === 'completed') && (
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center space-x-2">
                 <Play className="w-5 h-5" />
-                <span>Processed Video with Fire Detection</span>
+                <span>Processed Video (Compressed)</span>
               </CardTitle>
             </CardHeader>
             <CardContent>
@@ -293,16 +294,54 @@ export default function VideoResults({ params }: { params: { videoId: string } }
                     console.error('Video error message:', errorMessage)
                     setVideoError(`Video playback error (code ${errorCode}): ${errorMessage}`)
                     setIsVideoLoading(false)
+                    
+                    // Try to reload with cache busting
+                    if (errorCode === 4) {
+                      setTimeout(() => {
+                        if (videoElement) {
+                          const newUrl = `/api/video/compressed/${params.videoId}?t=${Date.now()}`
+                          console.log('🔄 Attempting reload with:', newUrl)
+                          videoElement.src = newUrl
+                          videoElement.load()
+                        }
+                      }, 1000)
+                    }
                   }}
-                  onLoadStart={() => setIsVideoLoading(true)}
-                  onCanPlay={() => setIsVideoLoading(false)}
+                  onLoadStart={() => {
+                    setIsVideoLoading(true)
+                    setVideoError(null)
+                  }}
+                  onCanPlay={() => {
+                    setIsVideoLoading(false)
+                    setVideoError(null)
+                  }}
                 >
                   <source
-                    src={results?.compressed_video_url ? `http://localhost:5000${results.compressed_video_url}` : `http://localhost:5000/api/video/${params.videoId}/compressed`}
+                    src={`/api/video/compressed/${params.videoId}`}
                     type="video/mp4"
                   />
                   Your browser does not support the video tag.
                 </video>
+                
+                {/* Loading Indicator */}
+                {isVideoLoading && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/50">
+                    <div className="text-white text-center">
+                      <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-white mx-auto mb-2"></div>
+                      <p>Loading video...</p>
+                    </div>
+                  </div>
+                )}
+                
+                {/* Error Message */}
+                {videoError && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/80">
+                    <div className="text-white text-center p-4">
+                      <p className="text-red-400 mb-2">⚠️ {videoError}</p>
+                      <p className="text-sm text-gray-400">The compressed video may still be processing. Please try again later.</p>
+                    </div>
+                  </div>
+                )}
 
                 {/* Custom Controls Overlay */}
                 <div 
@@ -456,7 +495,7 @@ export default function VideoResults({ params }: { params: { videoId: string } }
                   size="sm"
                   onClick={() => {
                     const link = document.createElement('a')
-                    link.href = results?.compressed_video_url ? `http://localhost:5000${results.compressed_video_url}` : `http://localhost:5000/api/video/${params.videoId}/compressed`
+                    link.href = `/api/video/compressed/${params.videoId}`
                     link.download = `${params.videoId}_compressed.mp4`
                     link.click()
                   }}

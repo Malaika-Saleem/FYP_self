@@ -27,6 +27,7 @@ from highlight_reel import HighlightReelGenerator
 from video_compression import VideoCompressor
 from json_reports import ReportGenerator
 from object_detection import ObjectDetectionIntegrator
+from behavior_analysis_integrator import BehaviorAnalysisIntegrator
 from detectifai_events import DetectifAIEventType, ThreatLevel
 
 # Set up logging
@@ -72,6 +73,7 @@ class CompleteVideoProcessingPipeline:
             self.compressor = VideoCompressor(self.config)
             self.report_generator = ReportGenerator(self.config)
             self.object_detector = ObjectDetectionIntegrator(self.config)
+            self.behavior_analyzer = BehaviorAnalysisIntegrator(self.config)
             
             logger.info("✅ All pipeline components initialized successfully")
             
@@ -154,6 +156,21 @@ class CompleteVideoProcessingPipeline:
                 
                 logger.info(f"✅ Object detection complete: {len(object_events)} object-based events created")
             
+            # Step 3b: Behavior Analysis (if enabled)
+            behavior_results = []
+            behavior_events = []
+            if self.config.enable_behavior_analysis:
+                logger.info("🔍 Step 3b: Running behavior analysis...")
+                step_start = time.time()
+                
+                behavior_results, behavior_events = self.behavior_analyzer.process_keyframes_with_behavior_analysis(keyframes)
+                
+                self.processing_stats['component_times']['behavior_analysis'] = time.time() - step_start
+                results['outputs']['total_behavior_detections'] = len(behavior_results)
+                results['outputs']['total_behavior_events'] = len(behavior_events)
+                
+                logger.info(f"✅ Behavior analysis complete: {len(behavior_events)} behavior-based events created")
+            
             # Step 4: Detect motion-based events
             logger.info("🎯 Step 4: Detecting motion-based events...")
             step_start = time.time()
@@ -167,11 +184,16 @@ class CompleteVideoProcessingPipeline:
             if object_events:
                 standard_object_events = self.event_detector.convert_object_events_to_standard_format(object_events)
             
-            all_events = motion_events + standard_object_events
+            # Convert behavior events to standard format
+            standard_behavior_events = []
+            if behavior_events:
+                standard_behavior_events = self.event_detector.convert_behavior_events_to_standard_format(behavior_events)
+            
+            all_events = motion_events + standard_object_events + standard_behavior_events
             results['outputs']['total_motion_events'] = len(motion_events)
             results['outputs']['total_events'] = len(all_events)
             
-            logger.info(f"✅ Detected {len(motion_events)} motion events + {len(object_events)} object events = {len(all_events)} total events")
+            logger.info(f"✅ Detected {len(motion_events)} motion events + {len(object_events)} object events + {len(behavior_events)} behavior events = {len(all_events)} total events")
             
             # Step 4.5: DetectifAI Security Event Processing (includes facial recognition)
             logger.info("🔍 Step 4.5: DetectifAI Security Event Processing...")
@@ -203,15 +225,36 @@ class CompleteVideoProcessingPipeline:
                         suspicious_frames = []
                         
                         # Find frames with object detections (suspicious activity)
+                        suspicious_frames = []
                         if detection_results:
-                            suspicious_frames = [result for result in detection_results if result.total_detections > 0]
-                            logger.info(f"👤 Applying facial recognition to {len(suspicious_frames)} suspicious frames")
+                            suspicious_frames.extend([result for result in detection_results if result.total_detections > 0])
+                        
+                        # Also find frames with behavior detections (suspicious activity)
+                        if behavior_results:
+                            behavior_suspicious = self.behavior_analyzer.get_suspicious_frames(behavior_results)
+                            suspicious_frames.extend(behavior_suspicious)
+                            logger.info(f"🔍 Found {len(behavior_suspicious)} suspicious frames from behavior analysis")
+                        
+                        # Remove duplicates based on frame_path
+                        seen_paths = set()
+                        unique_suspicious_frames = []
+                        for frame in suspicious_frames:
+                            frame_path = frame.frame_path if hasattr(frame, 'frame_path') else getattr(frame, 'frame_path', None)
+                            if frame_path and frame_path not in seen_paths:
+                                seen_paths.add(frame_path)
+                                unique_suspicious_frames.append(frame)
+                        
+                        logger.info(f"👤 Applying facial recognition to {len(unique_suspicious_frames)} suspicious frames (from object detection + behavior analysis)")
+                        
+                        # Run face detection on suspicious frames only
+                        for suspicious_frame in unique_suspicious_frames:
+                            frame_path = suspicious_frame.frame_path if hasattr(suspicious_frame, 'frame_path') else getattr(suspicious_frame, 'frame_path', None)
+                            timestamp = suspicious_frame.timestamp if hasattr(suspicious_frame, 'timestamp') else getattr(suspicious_frame, 'timestamp', 0.0)
                             
-                            # Run face detection on suspicious frames only
-                            for suspicious_frame in suspicious_frames:
+                            if frame_path and os.path.exists(frame_path):
                                 face_result = face_detector.detect_faces_in_frame(
-                                    suspicious_frame.frame_path, 
-                                    suspicious_frame.timestamp
+                                    frame_path, 
+                                    timestamp
                                 )
                                 if face_result.faces_detected > 0:
                                     face_results.append(face_result)
@@ -347,7 +390,7 @@ class CompleteVideoProcessingPipeline:
             logger.info("📋 Step 7: Generating reports...")
             step_start = time.time()
             
-            report_paths = self._generate_all_reports(keyframes, all_events, canonical_events, segments, detection_results)
+            report_paths = self._generate_all_reports(keyframes, all_events, canonical_events, segments, detection_results, behavior_results)
             results['outputs']['reports'] = report_paths
             
             self.processing_stats['component_times']['report_generation'] = time.time() - step_start
@@ -415,14 +458,14 @@ class CompleteVideoProcessingPipeline:
     
     def _generate_all_reports(self, keyframes: List, events: List, 
                             canonical_events: List, segments: List, 
-                            detection_results: List = None) -> Dict[str, str]:
+                            detection_results: List = None, behavior_results: List = None) -> Dict[str, str]:
         """Generate all types of reports"""
         report_paths = {}
         
         try:
-            # Processing results report (enhanced with object detection)
+            # Processing results report (enhanced with object detection and behavior analysis)
             processing_report = self.report_generator.generate_processing_results_report(
-                keyframes, events, canonical_events, segments, self.processing_stats, detection_results
+                keyframes, events, canonical_events, segments, self.processing_stats, detection_results, behavior_results
             )
             if processing_report:
                 report_paths['processing_results'] = processing_report
@@ -445,10 +488,18 @@ class CompleteVideoProcessingPipeline:
                 if object_detection_report:
                     report_paths['object_detection'] = object_detection_report
             
-            # HTML gallery (enhanced with object detection)
+            # Behavior analysis report (if enabled)
+            if self.config.enable_behavior_analysis and behavior_results:
+                behavior_analysis_report = self.report_generator.generate_behavior_analysis_report(
+                    behavior_results, self.behavior_analyzer.get_behavior_analysis_summary()
+                )
+                if behavior_analysis_report:
+                    report_paths['behavior_analysis'] = behavior_analysis_report
+            
+            # HTML gallery (enhanced with object detection and behavior analysis)
             if self.config.generate_html_gallery:
                 html_gallery = self.report_generator.generate_html_gallery(
-                    keyframes, canonical_events, segments, detection_results
+                    keyframes, canonical_events, segments, detection_results, behavior_results
                 )
                 if html_gallery:
                     report_paths['html_gallery'] = html_gallery

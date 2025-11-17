@@ -2,7 +2,7 @@
 
 import type React from "react"
 
-import { useState } from "react"
+import { useState, useRef } from "react"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -25,6 +25,7 @@ export function UploadImageModal({ isOpen, onClose, onSearchResults }: UploadIma
   const [isSearching, setIsSearching] = useState(false)
   const [similarityThreshold, setSimilarityThreshold] = useState([0.6])
   const [maxResults, setMaxResults] = useState(10)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault()
@@ -59,6 +60,10 @@ export function UploadImageModal({ isOpen, onClose, onSearchResults }: UploadIma
         setUploadedFileUrl(url)
       }
     }
+  }
+
+  const handleChooseFile = () => {
+    fileInputRef.current?.click()
   }
 
   const handleScan = async () => {
@@ -141,12 +146,22 @@ export function UploadImageModal({ isOpen, onClose, onSearchResults }: UploadIma
                 </div>
                 <h3 className="font-medium mb-2">Drop your image here</h3>
                 <p className="text-sm text-muted-foreground mb-4">or click to browse files</p>
-                <input type="file" accept="image/*" onChange={handleFileInput} className="hidden" id="file-upload" />
-                <label htmlFor="file-upload">
-                  <Button variant="outline" className="cursor-pointer bg-transparent">
-                    CHOOSE SCAN
-                  </Button>
-                </label>
+                <input 
+                  type="file" 
+                  accept="image/*" 
+                  onChange={handleFileInput} 
+                  className="hidden" 
+                  id="file-upload"
+                  ref={fileInputRef}
+                />
+                <Button 
+                  variant="outline" 
+                  className="cursor-pointer bg-transparent"
+                  onClick={handleChooseFile}
+                  type="button"
+                >
+                  CHOOSE SCAN
+                </Button>
               </CardContent>
             </Card>
           ) : (
