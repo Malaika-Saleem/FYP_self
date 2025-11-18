@@ -357,13 +357,22 @@ class DatabaseIntegratedVideoService:
                                         frame_number = int(timestamp * 30)  # Fallback estimate
                                     
                                     # Process this face_info - Save face to MongoDB detected_faces collection
+                                    # Convert bounding box array to object format for schema compliance
+                                    bbox = face_info.get('bounding_box', [0, 0, 0, 0])
+                                    bbox_obj = {
+                                        'x': bbox[0] if len(bbox) > 0 else 0,
+                                        'y': bbox[1] if len(bbox) > 1 else 0,
+                                        'width': bbox[2] if len(bbox) > 2 else 0,
+                                        'height': bbox[3] if len(bbox) > 3 else 0
+                                    } if bbox else {}
+                                    
                                     face_data = {
                                         'face_id': face_info.get('face_id', f"face_{uuid.uuid4().hex[:8]}"),
                                         'event_id': associated_event_id or f"event_{uuid.uuid4().hex[:8]}",
                                         'detected_at': datetime.utcnow(),
                                         'confidence_score': float(face_info.get('confidence', 0.0)),
                                         'bounding_box': face_info.get('bounding_box', []),
-                                        'bounding_boxes': face_info.get('bounding_box', []),  # Also store as bounding_boxes for compatibility
+                                        'bounding_boxes': bbox_obj,  # Store as object for schema compliance
                                         'person_name': face_info.get('person_name'),
                                         'person_confidence': None,
                                         'face_image_path': '',  # Initialize as empty string (schema requires string)
@@ -474,13 +483,21 @@ class DatabaseIntegratedVideoService:
             # Step 6: Generate compressed video and upload to MinIO (optional)
             compressed_minio_path = None
             if self.config.generate_compressed_video:
+                logger.info(f"🔧 Starting compression for video: {video_id}, path: {video_path}")
                 self.video_repo.update_metadata(video_id, {
                     "processing_progress": 95,
                     "processing_message": "Generating and uploading compressed video..."
                 })
-                compressed_minio_path = self._generate_compressed_video(video_path, video_id)
-                if compressed_minio_path:
-                    logger.info(f"✅ Compressed video uploaded to MinIO: {compressed_minio_path}")
+                try:
+                    compressed_minio_path = self._generate_compressed_video(video_path, video_id)
+                    if compressed_minio_path:
+                        logger.info(f"✅ Compressed video uploaded to MinIO: {compressed_minio_path}")
+                    else:
+                        logger.error(f"❌ Compression failed for video: {video_id}")
+                except Exception as e:
+                    logger.error(f"❌ Exception during compression for {video_id}: {e}")
+                    import traceback
+                    logger.error(f"Compression traceback: {traceback.format_exc()}")
             
             # Step 7: Finalize processing
             final_meta_data = {
@@ -742,9 +759,15 @@ class DatabaseIntegratedVideoService:
     
     def _generate_compressed_video(self, video_path: str, video_id: str) -> Optional[str]:
         """Generate compressed version of video and upload to MinIO"""
+        logger.info(f"🔧 _generate_compressed_video called for {video_id}")
+        logger.info(f"🔧 Video path: {video_path}")
+        logger.info(f"🔧 Video path exists: {os.path.exists(video_path) if video_path else 'None'}")
+        
         try:
             # Use compression service to compress and store video
+            logger.info(f"🔧 Calling compression service for {video_id}")
             result = self.compression_service.compress_and_store(video_path, video_id)
+            logger.info(f"🔧 Compression service returned: {result}")
             
             if result and result.get('success'):
                 compression_info = {
@@ -765,11 +788,13 @@ class DatabaseIntegratedVideoService:
                 logger.info(f"✅ Stored compression info with local path: {result.get('local_path')}")
                 return result['minio_path']
             else:
-                logger.error("Video compression failed")
+                logger.error(f"❌ Video compression failed for {video_id}, result: {result}")
                 return None
             
         except Exception as e:
-            logger.error(f"❌ Failed to generate compressed video: {e}")
+            logger.error(f"❌ Failed to generate compressed video for {video_id}: {e}")
+            import traceback
+            logger.error(f"Compression exception traceback: {traceback.format_exc()}")
             return None
     
     def _cleanup_temp_files(self, video_path: str, keyframes: List):

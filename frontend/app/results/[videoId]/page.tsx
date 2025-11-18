@@ -590,41 +590,55 @@ export default function VideoResults({ params }: { params: { videoId: string } }
             <CardContent>
               {keyframes.length > 0 ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                  {keyframes.map((keyframe, index) => (
-                    <div 
-                      key={index}
-                      className={`bg-white dark:bg-gray-800 rounded-lg border shadow-sm overflow-hidden ${
-                        keyframe.has_detections ? 'border-red-200 dark:border-red-800' : ''
-                      }`}
-                    >
-                      <div className="aspect-video bg-gray-100 dark:bg-gray-700 relative">
-                        <img
-                          src={`http://localhost:5000${showOnlyDetections && keyframe.annotated_url ? keyframe.annotated_url : keyframe.url}`}
-                          alt={`Keyframe at ${keyframe.timestamp}s`}
-                          className="w-full h-full object-cover"
-                          loading="lazy"
-                        />
-                        {keyframe.has_detections && (
-                          <div className="absolute top-2 right-2 bg-red-600 text-white text-xs px-2 py-1 rounded">
-                            {keyframe.detection_count || 0} objects
-                          </div>
-                        )}
-                      </div>
-                      <div className="p-3">
-                        <p className="text-sm font-medium text-gray-900 dark:text-white">
-                          Frame {index + 1}
-                        </p>
-                        <p className="text-xs text-gray-600 dark:text-gray-400">
-                          Time: {parseFloat(keyframe.timestamp).toFixed(2)}s
-                        </p>
-                        {keyframe.objects && keyframe.objects.length > 0 && (
-                          <p className="text-xs text-red-600 dark:text-red-400 mt-1">
-                            {keyframe.objects.join(', ')}
+                  {keyframes.map((keyframe, index) => {
+                    // Use proxy route for keyframe images since MinIO URLs are localhost:9000
+                    const imageUrl = showOnlyDetections && keyframe.annotated_url 
+                      ? `/api/keyframes/proxy?url=${encodeURIComponent(keyframe.annotated_url)}`
+                      : `/api/keyframes/proxy?url=${encodeURIComponent(keyframe.url)}`;
+                    const fallbackUrl = `/api/keyframes/proxy?url=${encodeURIComponent(keyframe.url)}`;
+                    
+                    return (
+                      <div 
+                        key={index}
+                        className={`bg-white dark:bg-gray-800 rounded-lg border shadow-sm overflow-hidden ${
+                          keyframe.has_detections ? 'border-red-200 dark:border-red-800' : ''
+                        }`}
+                      >
+                        <div className="aspect-video bg-gray-100 dark:bg-gray-700 relative">
+                          <img
+                            src={imageUrl}
+                            alt={`Keyframe at ${keyframe.timestamp}s`}
+                            className="w-full h-full object-cover"
+                            loading="lazy"
+                            onError={(e) => {
+                              // Fallback to non-annotated if annotated fails
+                              if (showOnlyDetections && keyframe.annotated_url && e.currentTarget.src !== fallbackUrl) {
+                                e.currentTarget.src = fallbackUrl
+                              }
+                            }}
+                          />
+                          {keyframe.has_detections && (
+                            <div className="absolute top-2 right-2 bg-red-600 text-white text-xs px-2 py-1 rounded">
+                              {keyframe.detection_count || 0} objects
+                            </div>
+                          )}
+                        </div>
+                        <div className="p-3">
+                          <p className="text-sm font-medium text-gray-900 dark:text-white">
+                            Frame {index + 1}
                           </p>
-                        )}
+                          <p className="text-xs text-gray-600 dark:text-gray-400">
+                            Time: {parseFloat(keyframe.timestamp).toFixed(2)}s
+                          </p>
+                          {keyframe.objects && keyframe.objects.length > 0 && (
+                            <p className="text-xs text-red-600 dark:text-red-400 mt-1">
+                              {keyframe.objects.join(', ')}
+                            </p>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : (
                 <div className="text-center py-8 text-gray-500 dark:text-gray-400">

@@ -914,34 +914,6 @@ def get_keyframe_image(video_id, filename):
     
     return send_from_directory(frames_dir, filename)
 
-@app.route('/api/video/compressed/<video_id>', methods=['GET'])
-def get_compressed_video(video_id):
-    """Serve compressed video"""
-    if video_id not in processing_status:
-        return jsonify({'error': 'Video not found'}), 404
-    
-    status = processing_status[video_id]
-    
-    if status['status'] != 'completed':
-        return jsonify({'error': 'Processing not completed'}), 400
-    
-    output_dir = status['results']['output_directory']
-    compressed_dir = os.path.join(output_dir, 'compressed')
-    
-    if not os.path.exists(compressed_dir):
-        return jsonify({'error': 'Compressed video directory not found'}), 404
-    
-    # Find the compressed video file
-    video_files = [f for f in os.listdir(compressed_dir) if f.endswith('.mp4')]
-    
-    if not video_files:
-        return jsonify({'error': 'Compressed video file not found'}), 404
-    
-    # Use the first video file found (should only be one)
-    video_filename = video_files[0]
-    
-    return send_from_directory(compressed_dir, video_filename)
-
 @app.route('/api/videos', methods=['GET'])
 def list_videos():
     """List all processed videos"""
@@ -1546,32 +1518,49 @@ def serve_compressed_video(video_id):
                     files = os.listdir(output_dir)
                     logger.info(f"📁 Files in {output_dir}: {files}")
                     
+                    # CRITICAL FIX: Only serve files from the correct video_id directory
+                    # Check if this directory is specifically for our video_id
+                    is_video_specific_dir = video_id in output_dir
+                    
                     for file in files:
                         if file.endswith('.mp4'):
                             video_path = os.path.join(output_dir, file)
                             if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
-                                logger.info(f"✅ Found compressed video locally: {video_path} ({os.path.getsize(video_path)} bytes)")
-                                response = send_file(
-                                    video_path,
-                                    mimetype='video/mp4',
-                                    as_attachment=False,
-                                    download_name=file
-                                )
-                                # Add headers for video playback and streaming
-                                response.headers['Accept-Ranges'] = 'bytes'
-                                response.headers['Cache-Control'] = 'no-cache'
-                                response.headers['Access-Control-Allow-Origin'] = '*'
-                                response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
-                                response.headers['Access-Control-Allow-Headers'] = 'Range'
-                                response.headers['Content-Type'] = 'video/mp4'
-                                logger.info(f"✅ Serving compressed video from local storage: {video_path}")
-                                return response
+                                # If this is a video-specific directory, serve any .mp4 file found
+                                # If not, skip to avoid serving wrong videos
+                                if is_video_specific_dir:
+                                    logger.info(f"✅ Found compressed video locally: {video_path} ({os.path.getsize(video_path)} bytes)")
+                                    response = send_file(
+                                        video_path,
+                                        mimetype='video/mp4',
+                                        as_attachment=False,
+                                        download_name=file
+                                    )
+                                    # Add headers for video playback and streaming
+                                    response.headers['Accept-Ranges'] = 'bytes'
+                                    response.headers['Cache-Control'] = 'no-cache'
+                                    response.headers['Access-Control-Allow-Origin'] = '*'
+                                    response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+                                    response.headers['Access-Control-Allow-Headers'] = 'Range'
+                                    response.headers['Content-Type'] = 'video/mp4'
+                                    logger.info(f"✅ Serving compressed video from local storage: {video_path}")
+                                    return response
+                                else:
+                                    logger.warning(f"⚠️ Skipping {video_path} - not in video-specific directory")
                 except Exception as dir_err:
                     logger.warning(f"⚠️ Error reading directory {output_dir}: {dir_err}")
                     continue
         
         logger.error(f"❌ No compressed video found for {video_id} in any location")
         logger.error(f"   Checked {len(unique_dirs)} directories: {unique_dirs}")
+        logger.error(f"   Video may still be processing or compression failed")
+        
+        # Return 404 instead of falling through to serve a wrong video
+        return jsonify({
+            "error": "Compressed video not found",
+            "message": f"The compressed video for {video_id} is not available. It may still be processing or compression failed.",
+            "video_id": video_id
+        }), 404
         
         # Use video_exists_in_db from earlier check, or check again if not set
         if not video_exists_in_db and DATABASE_ENABLED:
