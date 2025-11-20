@@ -1,7 +1,7 @@
 """nlp_search/query_retreival.py
 
 Command-line utility to run a natural-language query against stored
-captions in MongoDB and return the top-K matching keyframes/captions.
+captions in MongoDB and return matching keyframes/captions above a similarity threshold.
 
 Behavior:
  - Connects to MongoDB (MONGO_URI via env)
@@ -10,15 +10,16 @@ Behavior:
    (documents should include `description_id`, `caption`, `text_embedding`,
     `event_id`, and `video_reference`)
  - Computes cosine similarity between query embedding and stored embeddings
- - Returns top-K matches with: caption, similarity_score (0..1),
-   event_id (if present), video reference, and timestamps (from `events` collection
-   if an event with matching event_id exists)
+ - Returns only matches with similarity >= 0.85 (85%) by default
+ - Results include: caption, similarity_score (0..1), event_id (if present),
+   video reference, and timestamps (from `events` collection if event exists)
 
 Usage:
-  python query_retreival.py --query "fire in building" --top_k 5
+  python query_retreival.py --query "fire in building"
+  python query_retreival.py -q "dog sitting" --threshold 0.80 --json
 
 """
-#python query_retreival.py -q "dog sitting on grass" -k 3 --json
+
 import os
 import argparse
 import json
@@ -100,7 +101,17 @@ def compute_similarities(q_emb, emb_matrix):
     return sims
 
 
-def retrieve_top_k(db, query_text, top_k=5):
+def retrieve_by_threshold(db, query_text, threshold=0.85):
+    """Retrieve captions with similarity above threshold.
+    
+    Args:
+        db: MongoDB database connection
+        query_text: Query string
+        threshold: Similarity threshold (0..1), default 0.85 (85%)
+    
+    Returns:
+        List of results sorted by similarity (descending)
+    """    
     model = SentenceTransformer("all-mpnet-base-v2")
     q_emb = model.encode(query_text, normalize_embeddings=True).astype("float32")
 
@@ -112,8 +123,10 @@ def retrieve_top_k(db, query_text, top_k=5):
 
     sims = compute_similarities(q_emb, emb_matrix)
 
-    # Get top_k indices
-    idxs = np.argsort(-sims)[:top_k]
+    # Filter by threshold and sort descending
+    mask = sims >= threshold
+    idxs = np.where(mask)[0]
+    idxs = idxs[np.argsort(-sims[idxs])]  # Sort by similarity descending
 
     results = []
     events_coll = db.get_collection("events")
@@ -148,26 +161,34 @@ def retrieve_top_k(db, query_text, top_k=5):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Query NLP captions and retrieve matching keyframes/events from DB")
+    parser = argparse.ArgumentParser(description="Query NLP captions and retrieve matching keyframes/events from DB with similarity >= threshold")
     parser.add_argument("--query", "-q", required=True, help="Query text")
-    parser.add_argument("--top_k", "-k", type=int, default=5, help="Number of top results to return")
+    parser.add_argument("--threshold", "-t", type=float, default=0.85, help="Similarity threshold (0..1), default 0.85 (85%)")
     parser.add_argument("--json", action="store_true", help="Print results as JSON")
     args = parser.parse_args()
 
+    # Validate threshold
+    if not (0.0 <= args.threshold <= 1.0):
+        print("Error: threshold must be between 0.0 and 1.0")
+        return
+
     db = connect_db()
-    results = retrieve_top_k(db, args.query, top_k=args.top_k)
+    results = retrieve_by_threshold(db, args.query, threshold=args.threshold)
 
     if args.json:
         print(json.dumps(results, indent=2, default=str))
     else:
-        print(f"Query: {args.query}\nTop {len(results)} matches:")
-        for i, r in enumerate(results, 1):
-            sim = r.get("similarity", 0.0)
-            start = r.get("start_timestamp_ms")
-            end = r.get("end_timestamp_ms")
-            vidref = r.get("video_reference") or {}
-            video_obj = vidref.get("object_name") if isinstance(vidref, dict) else None
-            print(f"[{i}] Score: {sim:.4f} | Caption: {r.get('caption')} | Video Obj: {video_obj} | start_ms: {start} | end_ms: {end}")
+        if not results:
+            print(f"Query: {args.query}\nNo matches found with similarity >= {args.threshold:.0%}")
+        else:
+            print(f"Query: {args.query}\nFound {len(results)} match(es) with similarity >= {args.threshold:.0%}:")
+            for i, r in enumerate(results, 1):
+                sim = r.get("similarity", 0.0)
+                start = r.get("start_timestamp_ms")
+                end = r.get("end_timestamp_ms")
+                vidref = r.get("video_reference") or {}
+                video_obj = vidref.get("object_name") if isinstance(vidref, dict) else None
+                print(f"[{i}] Score: {sim:.4f} ({sim:.0%}) | Caption: {r.get('caption')} | Video Obj: {video_obj} | start_ms: {start} | end_ms: {end}")
 
 
 if __name__ == "__main__":
