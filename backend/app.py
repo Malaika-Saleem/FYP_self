@@ -9,7 +9,7 @@ Enhanced Flask API for:
 - Frontend integration for surveillance dashboard
 """
 
-from flask import Flask, request, jsonify, send_file, send_from_directory, Response
+from flask import Flask, request, jsonify, send_file, send_from_directory, Response, redirect
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 import os
@@ -1156,9 +1156,12 @@ def process_existing_video(video_id):
 
 @app.route('/api/debug/compressed/<video_id>', methods=['GET'])
 def debug_compressed_video(video_id):
-    """Debug endpoint to check compressed video storage"""
+    """Debug endpoint to check compressed video storage and optionally serve it"""
     if not DATABASE_ENABLED:
         return jsonify({'error': 'Database not enabled'}), 503
+    
+    # Check if user wants to download the video
+    serve_video = request.args.get('serve', 'false').lower() == 'true'
     
     try:
         video_record = db_video_service.video_repo.get_video_by_id(video_id)
@@ -1170,6 +1173,7 @@ def debug_compressed_video(video_id):
         
         # Check MinIO
         minio_info = {}
+        objects = []
         try:
             objects = list(db_video_service.video_repo.minio.list_objects(bucket, prefix=f"compressed/{video_id}/", recursive=True))
             minio_info['objects_found'] = len(objects)
@@ -1177,12 +1181,62 @@ def debug_compressed_video(video_id):
         except Exception as e:
             minio_info['error'] = str(e)
         
+        # If user wants to serve the video, try to serve it
+        if serve_video and objects:
+            logger.info(f"🐛 DEBUG: Attempting to serve compressed video for: {video_id}")
+            try:
+                # Find video.mp4 in the objects
+                video_object = None
+                for obj in objects:
+                    if obj.object_name.endswith('video.mp4'):
+                        video_object = obj
+                        break
+                
+                if video_object:
+                    logger.info(f"🐛 DEBUG: Found video object: {video_object.object_name}")
+                    
+                    # Get the video data
+                    minio_client = db_video_service.video_repo.minio
+                    video_data = minio_client.get_object(bucket, video_object.object_name)
+                    
+                    # Create response
+                    def generate():
+                        try:
+                            for chunk in video_data.stream(8192):
+                                yield chunk
+                        finally:
+                            video_data.close()
+                    
+                    response = Response(
+                        generate(),
+                        mimetype='video/mp4',
+                        headers={
+                            'Content-Disposition': f'inline; filename="compressed_{video_id}.mp4"',
+                            'Accept-Ranges': 'bytes'
+                        }
+                    )
+                    
+                    logger.info(f"🐛 DEBUG: Successfully serving compressed video")
+                    return response
+                else:
+                    logger.warning(f"🐛 DEBUG: No video.mp4 found in objects")
+                    
+            except Exception as serve_e:
+                logger.error(f"🐛 DEBUG: Failed to serve video: {serve_e}")
+                return jsonify({
+                    'error': f'Failed to serve video: {str(serve_e)}',
+                    'video_id': video_id,
+                    'bucket': bucket,
+                    'minio_info': minio_info
+                }), 500
+        
         return jsonify({
             'video_id': video_id,
             'bucket': bucket,
             'minio_compressed_path': meta_data.get('minio_compressed_path'),
             'compression_info': meta_data.get('compression_info', {}),
-            'minio_info': minio_info
+            'minio_info': minio_info,
+            'help': 'Add ?serve=true to download the video'
         }), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -1295,6 +1349,12 @@ def serve_annotated_video(video_id):
 def serve_compressed_video(video_id):
     """Serve compressed processed video from MinIO or local storage"""
     logger.info(f"🎬 Request to serve compressed video: {video_id}")
+    
+    # QUICK FIX: Redirect to working V3 endpoint
+    logger.info(f"🔄 Redirecting to working V3 endpoint: {video_id}")
+    return redirect(f'/api/v3/video/compressed/{video_id}')
+    
+    # ORIGINAL COMPLEX LOGIC (fallback if simple approach fails)
     try:
         # First try to get from database/MinIO
         video_record = None
@@ -1420,6 +1480,14 @@ def serve_compressed_video(video_id):
             for i, p in enumerate(possible_paths, 1):
                 logger.info(f"   {i}. {p}")
             
+            # Debug: Log if DATABASE_ENABLED and which minio client we're using
+            logger.info(f"📋 DEBUG: DATABASE_ENABLED = {DATABASE_ENABLED}")
+            if DATABASE_ENABLED:
+                logger.info(f"📋 DEBUG: compression_bucket = {compression_bucket}")
+                logger.info(f"📋 DEBUG: video_bucket = {video_bucket}")
+                logger.info(f"📋 DEBUG: minio_client type = {type(minio_client)}")
+                logger.info(f"📋 DEBUG: minio_client available = {minio_client is not None}")
+            
             video_data = None
             successful_path = None
             
@@ -1457,6 +1525,21 @@ def serve_compressed_video(video_id):
                     logger.warning(f"   ❌ S3Error ({error_code}): {error_msg[:200]}")
                     if error_code == 'NoSuchKey':
                         logger.info(f"   ℹ️ Object '{minio_path}' not found in bucket '{video_bucket}'")
+                    
+                    # DEBUG: Let's list what's actually in the bucket at this path
+                    if error_code == 'NoSuchKey':
+                        try:
+                            prefix = '/'.join(minio_path.split('/')[:-1]) + '/'  # Get directory path
+                            logger.info(f"   🔍 DEBUG: Listing objects with prefix '{prefix}' in bucket '{video_bucket}'")
+                            debug_objects = list(minio_client.list_objects(video_bucket, prefix=prefix, recursive=True))
+                            if debug_objects:
+                                logger.info(f"   📦 DEBUG: Found {len(debug_objects)} objects:")
+                                for obj in debug_objects[:5]:  # Show first 5
+                                    logger.info(f"      - {obj.object_name} ({obj.size} bytes)")
+                            else:
+                                logger.info(f"   📦 DEBUG: No objects found with prefix '{prefix}'")
+                        except Exception as debug_e:
+                            logger.warning(f"   ⚠️ DEBUG: Failed to list objects: {debug_e}")
                     continue
                 except Exception as e1:
                     error_msg = str(e1)
@@ -1971,6 +2054,90 @@ def serve_minio_image(bucket, object_path):
     except Exception as e:
         logger.error(f"Error serving MinIO image: {e}")
         return jsonify({'error': f'Error serving image: {str(e)}'}), 500
+
+
+
+@app.route('/api/v3/video/compressed/<video_id>', methods=['GET'])
+def serve_compressed_video_v3(video_id):
+    """NEW: Simple working compressed video endpoint"""
+    logger.info(f"🆕 V3 Request to serve compressed video: {video_id}")
+    
+    if not DATABASE_ENABLED:
+        return jsonify({'error': 'Database service not available'}), 503
+    
+    try:
+        # Get video record
+        video_record = db_video_service.video_repo.get_video_by_id(video_id)
+        if not video_record:
+            logger.error(f"🆕 Video record not found: {video_id}")
+            return jsonify({'error': 'Video not found'}), 404
+        
+        logger.info(f"🆕 Found video record for: {video_id}")
+        
+        # Get MinIO client and bucket
+        minio_client = db_video_service.video_repo.minio
+        bucket = "detectifai-videos"
+        
+        # Standard path where compressed videos should be
+        minio_path = f"compressed/{video_id}/video.mp4"
+        
+        logger.info(f"🆕 Attempting to retrieve: {bucket}/{minio_path}")
+        
+        try:
+            # Get the video data
+            video_data = minio_client.get_object(bucket, minio_path)
+            
+            # Create streaming response
+            def generate():
+                try:
+                    chunk_size = 8192
+                    while True:
+                        chunk = video_data.read(chunk_size)
+                        if not chunk:
+                            break
+                        yield chunk
+                finally:
+                    video_data.close()
+            
+            response = Response(
+                generate(),
+                mimetype='video/mp4',
+                headers={
+                    'Content-Disposition': f'inline; filename="compressed_{video_id}.mp4"',
+                    'Accept-Ranges': 'bytes',
+                    'Cache-Control': 'public, max-age=3600'
+                }
+            )
+            
+            logger.info(f"🆕 Successfully serving compressed video: {video_id}")
+            return response
+            
+        except Exception as minio_e:
+            logger.error(f"🆕 MinIO retrieval failed: {minio_e}")
+            
+            # List what's available for debugging
+            try:
+                prefix = f"compressed/{video_id}/"
+                objects = list(minio_client.list_objects(bucket, prefix=prefix, recursive=True))
+                logger.info(f"🆕 Found {len(objects)} objects with prefix '{prefix}':")
+                for obj in objects:
+                    logger.info(f"   - {obj.object_name} ({obj.size} bytes)")
+                
+                return jsonify({
+                    'error': 'Compressed video not accessible',
+                    'available_objects': [obj.object_name for obj in objects],
+                    'attempted_path': minio_path
+                }), 404
+                
+            except Exception as list_e:
+                logger.error(f"🆕 Failed to list objects: {list_e}")
+                return jsonify({'error': f'MinIO access failed: {str(minio_e)}'}), 500
+    
+    except Exception as e:
+        logger.error(f"🆕 General error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/minio/presigned/<bucket>/<path:object_path>', methods=['GET'])
 def get_minio_presigned_url(bucket, object_path):

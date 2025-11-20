@@ -8,8 +8,8 @@ export async function GET(
     const videoId = params.videoId
     console.log('🎬 Next.js API: Fetching compressed video for:', videoId)
     
-    // Forward request to Flask backend for compressed video
-    const response = await fetch(`http://localhost:5000/api/video/compressed/${videoId}`, {
+    // Forward request to Flask backend for compressed video (using working V3 endpoint)
+    const response = await fetch(`http://localhost:5000/api/v3/video/compressed/${videoId}`, {
       method: 'GET',
       headers: {
         'Accept': 'video/mp4, video/*, */*',

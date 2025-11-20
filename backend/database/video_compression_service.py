@@ -138,9 +138,9 @@ class VideoCompressionService:
             
             # Add resolution scaling if needed
             if self.output_resolution == "720p":
-                cmd.extend(['-vf', 'scale=-1:720'])  # Scale to 720p preserving aspect ratio
+                cmd.extend(['-vf', 'scale=1280:720:force_original_aspect_ratio=decrease'])  # Scale to 720p preserving aspect ratio
             elif self.output_resolution == "480p":
-                cmd.extend(['-vf', 'scale=-1:480'])  # Scale to 480p preserving aspect ratio
+                cmd.extend(['-vf', 'scale=854:480:force_original_aspect_ratio=decrease'])  # Scale to 480p preserving aspect ratio
             
             cmd.append(output_path)
             
@@ -163,50 +163,56 @@ class VideoCompressionService:
             return False
     
     def _compress_with_ffmpeg_to_buffer(self, input_path: str, output_buffer: BytesIO) -> bool:
-        """Compress video using FFmpeg directly to a buffer"""
+        """Compress video using FFmpeg with temporary file (more reliable than pipe)"""
+        import tempfile
         try:
-            # Build FFmpeg command to output to pipe
+            # Create temporary file for FFmpeg output
+            with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as temp_file:
+                temp_path = temp_file.name
+            
+            # Build FFmpeg command to output to temporary file
             cmd = [
                 'ffmpeg',
                 '-i', input_path,
                 '-c:v', 'libx264',  # H.264 codec
                 '-crf', str(self.compression_crf),
                 '-preset', self.compression_preset,
-                '-movflags', '+faststart',  # Enable web playback
-                '-f', 'mp4',  # Force MP4 format
-                '-y',  # Overwrite output
-                'pipe:1'  # Output to pipe
+                '-movflags', '+faststart',  # Enable web playback (safe for file output)
+                '-y'  # Overwrite output
             ]
             
             # Add resolution scaling if needed
             if self.output_resolution == "720p":
-                cmd[4:4] = ['-vf', 'scale=-1:720']  # Scale to 720p preserving aspect ratio
+                cmd.extend(['-vf', 'scale=1280:720:force_original_aspect_ratio=decrease'])  # Scale to 720p preserving aspect ratio
             elif self.output_resolution == "480p":
-                cmd[4:4] = ['-vf', 'scale=-1:480']  # Scale to 480p preserving aspect ratio
+                cmd.extend(['-vf', 'scale=854:480:force_original_aspect_ratio=decrease'])  # Scale to 480p preserving aspect ratio
             
-            # Run FFmpeg with pipe output
-            process = subprocess.Popen(
+            # Add output file
+            cmd.append(temp_path)
+            
+            # Run FFmpeg
+            result = subprocess.run(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
+                capture_output=True,
+                text=True,
+                timeout=300  # 5 minute timeout
             )
             
-            # Read output in chunks to avoid memory issues
-            chunk_size = 8192  # 8KB chunks
-            while True:
-                chunk = process.stdout.read(chunk_size)
-                if not chunk:
-                    break
-                output_buffer.write(chunk)
-            
-            # Check if process completed successfully
-            return_code = process.wait()
-            if return_code == 0:
+            if result.returncode == 0 and os.path.exists(temp_path):
+                # Read temporary file into buffer
+                with open(temp_path, 'rb') as f:
+                    output_buffer.write(f.read())
+                
+                # Clean up temporary file
+                os.unlink(temp_path)
+                
                 logger.info("✅ FFmpeg compression to buffer successful")
                 return True
             else:
-                stderr = process.stderr.read().decode()
-                logger.error(f"FFmpeg error: {stderr}")
+                # Clean up temporary file on error
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+                logger.error(f"FFmpeg error: {result.stderr}")
                 return False
                 
         except Exception as e:

@@ -248,6 +248,42 @@ class DatabaseIntegratedVideoService:
                     video_id, keyframes
                 )
             
+            # Step 4.5: Behavior analysis (if enabled)
+            behavior_results = []
+            behavior_events = []
+            if self.config.enable_behavior_analysis and self.behavior_analyzer:
+                self.video_repo.update_metadata(video_id, {
+                    "processing_progress": 55,
+                    "processing_message": "Running behavior analysis (fight/accident/climbing detection)..."
+                })
+                logger.info("🚀 ===== STARTING BEHAVIOR ANALYSIS ===== ")
+                logger.info(f"📹 Processing video: {video_path}")
+                logger.info(f"🔧 Available models: {list(self.behavior_analyzer.models.keys())}")
+                
+                # Pass video_path for 3D-ResNet models (fighting, road_accident) which need 16-frame clips
+                behavior_results, behavior_events = self.behavior_analyzer.process_keyframes_with_behavior_analysis(keyframes, video_path=video_path)
+                
+                # Store behavior detections in keyframes
+                for i, keyframe in enumerate(keyframes):
+                    frame_path = keyframe.frame_data.frame_path if hasattr(keyframe, 'frame_data') else None
+                    timestamp = keyframe.frame_data.timestamp if hasattr(keyframe, 'frame_data') else 0
+                    
+                    # Find behavior detections for this frame
+                    frame_behaviors = [r for r in behavior_results if r.frame_path == frame_path and abs(r.timestamp - timestamp) < 0.1]
+                    
+                    if frame_behaviors:
+                        for behavior in frame_behaviors:
+                            if not hasattr(keyframe, 'behaviors'):
+                                keyframe.behaviors = []
+                            keyframe.behaviors.append({
+                                "type": behavior.behavior_detected,
+                                "confidence": behavior.confidence,
+                                "model": behavior.model_used,
+                                "timestamp": behavior.timestamp
+                            })
+                
+                logger.info(f"✅ Behavior analysis complete: {len(behavior_results)} detections, {len(behavior_events)} events")
+            
             # Step 5: Event detection and aggregation
             self.video_repo.update_metadata(video_id, {
                 "processing_progress": 70,
@@ -265,9 +301,35 @@ class DatabaseIntegratedVideoService:
                     event_id = self.event_repo.save_event(event)
                     event_ids.append(event_id)
             
+            # Create and save events from behavior analysis
+            if behavior_events:
+                logger.info(f"📅 Creating {len(behavior_events)} behavior-based events...")
+                for behavior_event in behavior_events:
+                    event_dict = {
+                        "video_id": video_id,
+                        "event_type": f"behavior_{behavior_event.behavior_type}",
+                        "start_timestamp": behavior_event.start_timestamp,
+                        "end_timestamp": behavior_event.end_timestamp,
+                        "confidence_score": float(behavior_event.confidence),
+                        "keyframes": behavior_event.keyframes,
+                        "importance_score": float(behavior_event.importance_score),
+                        "description": f"{behavior_event.behavior_type.capitalize()} behavior detected",
+                        "detection_data": {
+                            "model_used": behavior_event.model_used,
+                            "frame_indices": behavior_event.frame_indices,
+                            "behavior_type": behavior_event.behavior_type
+                        }
+                    }
+                    try:
+                        event_id = self.event_repo.save_event(event_dict)
+                        event_ids.append(event_id)
+                        logger.info(f"✅ Saved behavior event: {behavior_event.behavior_type} at {behavior_event.start_timestamp:.1f}s")
+                    except Exception as e:
+                        logger.error(f"❌ Failed to save behavior event: {e}")
+            
             # Step 5.5: Run facial recognition on frames with detections (if enabled)
             face_results = []
-            if self.config.enable_facial_recognition and detection_results and event_ids:
+            if self.config.enable_facial_recognition and (detection_results or behavior_results) and event_ids:
                 self.video_repo.update_metadata(video_id, {
                     "processing_progress": 75,
                     "processing_message": "Running facial recognition on suspicious frames..."
@@ -289,13 +351,19 @@ class DatabaseIntegratedVideoService:
                             else getattr(frame_data, 'timestamp', 0.0)
                         )
                         
-                        # Check if this frame has detections
-                        has_detection = any(
+                        # Check if this frame has object detections
+                        has_object_detection = any(
                             abs(d['frame_timestamp'] - timestamp) < 0.5 
                             for d in detection_results
                         )
                         
-                        if has_detection and frame_path and os.path.exists(frame_path):
+                        # Check if this frame has behavior detections
+                        has_behavior_detection = any(
+                            abs(b.timestamp - timestamp) < 0.5 and b.behavior_detected != "no_action"
+                            for b in behavior_results
+                        )
+                        
+                        if (has_object_detection or has_behavior_detection) and frame_path and os.path.exists(frame_path):
                             frames_with_detections.append((frame_path, timestamp))
                     
                     # Run facial recognition on suspicious frames

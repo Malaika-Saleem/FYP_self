@@ -35,8 +35,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 MODEL_PATHS = {
     "fight_detection":   os.path.join(BASE_DIR, "fight_detection.pt"),
-    "road_accident":     os.path.join(BASE_DIR, "road_accident.pt"),
-    "wallclimb":         os.path.join(BASE_DIR, "wallclimb.pt"),
+    "road_accident":     os.path.join(BASE_DIR, "accident_detection.pt"),
+    "wallclimb":         os.path.join(BASE_DIR, "wall climb.pt"),
 }
 
 # Define which models are 3D-ResNet (run separately) vs YOLO
@@ -137,7 +137,7 @@ ACTION_LABELS = {
 }
 CONFIDENCE_THRESHOLD = 0.5
 
-def interpret_prediction(model, output, model_name):
+def interpret_prediction(model, output, model_name, confidence_threshold=0.6):
     """
     Interpret model output and return one of three actions: "fighting", "accident", or "climbing".
     If confidence is below 0.5, suppress the prediction and return ("no_action", 0.0).
@@ -149,41 +149,55 @@ def interpret_prediction(model, output, model_name):
     """
     # -------- YOLO (wallclimb) --------
     if hasattr(model, "predict") and isinstance(output, list):
+        logger.info(f"🔍 YOLO prediction for {model_name}")
         boxes = output[0].boxes
         if boxes is None or len(boxes) == 0:
+            logger.info("🚫 No boxes detected by YOLO")
             return ("no_action", 0.0)
 
         best = boxes[0]
         cls_idx = int(best.cls)
         conf = float(best.conf)
         
+        logger.info(f"🎯 YOLO detection: class_idx={cls_idx}, confidence={conf:.3f}, threshold={confidence_threshold}")
+        
         # Suppress if confidence < threshold
-        if conf < CONFIDENCE_THRESHOLD:
+        if conf < confidence_threshold:
+            logger.info(f"🚫 Confidence {conf:.3f} below threshold {confidence_threshold}")
             return ("no_action", 0.0)
         
         # YOLO returns climbing detections
         label = "climbing" if cls_idx == 0 else "no_action"
+        logger.info(f"✅ YOLO final result: {label} (conf: {conf:.3f})")
         return (label, conf)
 
     # -------- 3D-ResNet (fight_detection or road_accident) --------
     if isinstance(output, torch.Tensor):
+        logger.info(f"🔍 3D-ResNet prediction for {model_name}")
         probs = torch.softmax(output, dim=1)[0]
         cls_idx = int(torch.argmax(probs).item())
         conf = float(probs[cls_idx])
         
+        logger.info(f"📊 Raw probabilities: {probs.tolist()}")
+        logger.info(f"🎯 Predicted class: {cls_idx}, confidence: {conf:.3f}, threshold: {confidence_threshold}")
+        
         # Suppress if confidence < threshold
-        if conf < CONFIDENCE_THRESHOLD:
+        if conf < confidence_threshold:
+            logger.info(f"🚫 Confidence {conf:.3f} below threshold {confidence_threshold}")
             return ("no_action", 0.0)
         
         # Model-specific mapping (class 0 = negative, class 1 = positive)
         if "fight" in model_name.lower():
             label = "fighting" if cls_idx == 1 else "no_action"
+            logger.info(f"🥊 Fight detection: class {cls_idx} -> {label}")
         elif "accident" in model_name.lower() or "road" in model_name.lower():
             # match user's naming and capitalization for saved frames
-            label = "Accident" if cls_idx == 0 else "no_action"
+            label = "Accident" if cls_idx == 1 else "no_action"
         else:
             label = "no_action"
+            logger.info(f"❓ Unknown model type, defaulting to no_action")
         
+        logger.info(f"✅ 3D-ResNet final result: {label} (conf: {conf:.3f})")
         return (label, conf)
     
 

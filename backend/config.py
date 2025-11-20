@@ -169,7 +169,7 @@ class VideoProcessingConfig:
     
     # Object detection specific thresholds
     fire_detection_confidence: float = 0.4     # Lower threshold for fire (safety critical)
-    weapon_detection_confidence: float = 0.6   # Higher threshold for weapons (reduce false positives)
+    weapon_detection_confidence: float = 0.7   # Higher threshold for weapons (reduce false positives)
     
     # Enable specific object types
     enable_fire_detection: bool = True
@@ -265,7 +265,7 @@ def get_security_focused_config() -> VideoProcessingConfig:
         enable_object_detection=True,
         object_detection_confidence=0.4,  # Lower threshold for better recall
         fire_detection_confidence=0.3,    # Very sensitive for fire
-        weapon_detection_confidence=0.5,  # Balanced for weapons
+        weapon_detection_confidence=0.4,  # Higher threshold for weapons to reduce false positives
         object_event_temporal_window=8.0, # Longer window for complex events
         enable_object_annotation=True,
         object_event_importance_multiplier=3.0,  # High importance for security events

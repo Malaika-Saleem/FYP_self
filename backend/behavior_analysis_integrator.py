@@ -58,6 +58,8 @@ class BehaviorAnalysisIntegrator:
         self.config = config
         self.enabled = getattr(config, 'enable_behavior_analysis', False)
         
+        logger.info(f"🔍 Initializing BehaviorAnalysisIntegrator - enabled: {self.enabled}")
+        
         # Initialize models if enabled
         self.models = {}
         self.device = None
@@ -68,15 +70,18 @@ class BehaviorAnalysisIntegrator:
                 self.device = torch.device("cuda" if (torch.cuda.is_available() and getattr(config, 'use_gpu_acceleration', True)) else "cpu")
                 
                 # Load all available models
+                logger.info(f"🔧 Attempting to load models from: {MODEL_PATHS}")
                 for model_name, model_path in MODEL_PATHS.items():
+                    logger.info(f"📁 Checking model {model_name} at: {model_path}")
                     if os.path.exists(model_path):
                         try:
+                            logger.info(f"⏳ Loading {model_name}...")
                             self.models[model_name] = load_model(model_path, self.device)
                             logger.info(f"✅ Loaded behavior analysis model: {model_name}")
                         except Exception as e:
-                            logger.warning(f"⚠️ Failed to load {model_name}: {e}")
+                            logger.error(f"❌ Failed to load {model_name}: {e}")
                     else:
-                        logger.warning(f"⚠️ Model file not found: {model_path}")
+                        logger.error(f"❌ Model file not found: {model_path}")
                 
                 if not self.models:
                     logger.warning("⚠️ No behavior analysis models loaded, disabling behavior analysis")
@@ -122,7 +127,10 @@ class BehaviorAnalysisIntegrator:
                 # YOLO models (wallclimb)
                 if model_name in YOLO_MODELS:
                     output = model.predict(frame, verbose=False)
-                    label, conf = interpret_prediction(model, output, model_name)
+                    confidence_threshold = getattr(self.config, 'behavior_detection_confidence', 0.5)
+                    label, conf = interpret_prediction(model, output, model_name, confidence_threshold)
+                    
+                    logger.info(f"🔍 YOLO model {model_name} prediction: {label} (confidence: {conf:.3f}, threshold: {confidence_threshold})")
                     
                     if label != "no_action":
                         result = BehaviorDetectionResult(
@@ -258,7 +266,10 @@ class BehaviorAnalysisIntegrator:
                 with torch.no_grad():
                     output = model(clip)
                 
-                label, conf = interpret_prediction(model, output, model_name)
+                confidence_threshold = getattr(self.config, 'behavior_detection_confidence', 0.5)
+                label, conf = interpret_prediction(model, output, model_name, confidence_threshold)
+                
+                logger.info(f"🔍 Model {model_name} prediction: {label} (confidence: {conf:.3f}, threshold: {confidence_threshold})")
                 
                 if label != "no_action":
                     # Use middle timestamp of the segment
@@ -293,13 +304,21 @@ class BehaviorAnalysisIntegrator:
             List of BehaviorDetectionResult objects
         """
         if not self.enabled:
+            logger.info("🚫 Behavior analysis disabled, skipping")
             return []
+            
+        logger.info(f"🎬 Starting behavior detection on {len(keyframes)} keyframes")
+        logger.info(f"📹 Video path provided: {video_path}")
+        logger.info(f"🤖 Available models: {list(self.models.keys())}")
         
         logger.info(f"🔍 Running behavior analysis on {len(keyframes)} keyframes...")
         
         all_results = []
         
         # Process YOLO models (single frame) - wallclimb
+        yolo_models_available = [m for m in self.models.keys() if m in YOLO_MODELS]
+        logger.info(f"🎯 Processing YOLO models (single frame): {yolo_models_available}")
+        
         for i, keyframe in enumerate(keyframes):
             # Extract frame path and timestamp
             frame_path = None
@@ -320,7 +339,10 @@ class BehaviorAnalysisIntegrator:
         
         # Process 3D-ResNet models (need 16-frame clips) - fighting, road_accident
         if video_path and os.path.exists(video_path) and RESNET_MODELS:
-            logger.info(f"🎬 Processing 3D-ResNet models (fighting, road_accident) using video segments...")
+            resnet_models_available = [m for m in self.models.keys() if m in RESNET_MODELS]
+            logger.info(f"🎬 Processing 3D-ResNet models using video segments...")
+            logger.info(f"📊 Available ResNet models: {resnet_models_available}")
+            logger.info(f"📊 Total ResNet models to process: {len(resnet_models_available)}")
             
             # Group keyframes into temporal segments for 3D-ResNet processing
             # Process segments of ~1 second (16 frames at ~30fps) around each keyframe
@@ -347,6 +369,7 @@ class BehaviorAnalysisIntegrator:
                         processed_segments.add(segment_key)
                         
                         try:
+                            logger.info(f"🎥 Processing video segment: {start_time:.1f}s - {end_time:.1f}s")
                             # Process segment with 3D-ResNet models
                             segment_results = self.detect_behavior_in_segment(
                                 video_path=video_path,
@@ -354,9 +377,12 @@ class BehaviorAnalysisIntegrator:
                                 end_time=end_time,
                                 frame_indices=None
                             )
+                            logger.info(f"📈 Segment results: {len(segment_results)} detections")
+                            for result in segment_results:
+                                logger.info(f"🔍 Detected: {result.behavior_detected} (conf: {result.confidence:.3f})")
                             all_results.extend(segment_results)
                         except Exception as e:
-                            logger.warning(f"⚠️ Error processing segment {start_time:.1f}s-{end_time:.1f}s: {e}")
+                            logger.error(f"❌ Error processing segment {start_time:.1f}s-{end_time:.1f}s: {e}")
                             continue
         
         logger.info(f"✅ Behavior analysis complete: {len(all_results)} behaviors detected")
@@ -472,8 +498,13 @@ class BehaviorAnalysisIntegrator:
             Tuple of (detection_results, behavior_events)
         """
         if not self.enabled:
-            logger.info("Behavior analysis disabled, skipping...")
+            logger.info("🚫 Behavior analysis disabled, skipping...")
             return [], []
+            
+        logger.info("🚀 ===== STARTING BEHAVIOR ANALYSIS INTEGRATION =====")
+        logger.info(f"📊 Input: {len(keyframes)} keyframes, video_path: {video_path}")
+        logger.info(f"🤖 Loaded models: {list(self.models.keys())}")
+        logger.info(f"⚙️ Confidence threshold: {getattr(self.config, 'behavior_detection_confidence', 0.5)}")
         
         logger.info("🔍 Starting behavior analysis integration")
         
@@ -482,6 +513,14 @@ class BehaviorAnalysisIntegrator:
         
         # Create behavior-based events
         temporal_window = getattr(self.config, 'behavior_event_temporal_window', 5.0)
+        logger.info(f"📅 Creating behavior events with temporal window: {temporal_window}s")
+        logger.info(f"📊 Total detections to process: {len(detection_results)}")
+        
+        positive_detections = [r for r in detection_results if r.behavior_detected != "no_action"]
+        logger.info(f"✅ Positive detections: {len(positive_detections)}")
+        for detection in positive_detections:
+            logger.info(f"   🎯 {detection.behavior_detected} at {detection.timestamp:.1f}s (conf: {detection.confidence:.3f})")
+            
         behavior_events = self.create_behavior_events(detection_results, temporal_window)
         
         # Store detection metadata
@@ -506,7 +545,14 @@ class BehaviorAnalysisIntegrator:
             
             logger.info(f"📊 Behavior analysis metadata saved: {metadata_path}")
         
-        logger.info(f"✅ Behavior analysis integration complete: {len(behavior_events)} events created")
+        logger.info("🏁 ===== BEHAVIOR ANALYSIS INTEGRATION COMPLETE =====")
+        logger.info(f"📈 Summary:")
+        logger.info(f"   📊 Total detections: {len(detection_results)}")
+        logger.info(f"   ✅ Positive detections: {len([r for r in detection_results if r.behavior_detected != 'no_action'])}")
+        logger.info(f"   📅 Events created: {len(behavior_events)}")
+        
+        for event in behavior_events:
+            logger.info(f"   🎬 Event: {event.behavior_type} ({event.start_timestamp:.1f}s-{event.end_timestamp:.1f}s, conf: {event.confidence:.3f})")
         
         return detection_results, behavior_events
     

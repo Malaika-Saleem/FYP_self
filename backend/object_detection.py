@@ -142,6 +142,17 @@ class ObjectDetector:
                             else:
                                 class_name = f"unknown_{cls}"
                             
+                            # Apply specific confidence thresholds based on object type
+                            confidence_threshold = self.confidence_threshold  # default
+                            if class_name == 'fire':
+                                confidence_threshold = getattr(self.config, 'fire_detection_confidence', 0.4)
+                            elif class_name in ['knife', 'gun']:
+                                confidence_threshold = getattr(self.config, 'weapon_detection_confidence', 0.7)
+                            
+                            # Skip detection if confidence is below specific threshold
+                            if float(conf) < confidence_threshold:
+                                continue
+                            
                             # Calculate center point and area
                             x1, y1, x2, y2 = box.astype(int)
                             center_x = int((x1 + x2) / 2)
