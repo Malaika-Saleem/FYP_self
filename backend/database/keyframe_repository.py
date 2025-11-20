@@ -16,11 +16,13 @@ from minio.error import S3Error
 logger = logging.getLogger(__name__)
 
 class KeyframeRepository:
-    """Repository for keyframe operations with MinIO storage"""
+    """Repository for keyframe operations with MinIO storage and MongoDB"""
     
     def __init__(self, db_manager):
         self.minio = db_manager.minio_client
+        self.db = db_manager.db
         self.bucket = db_manager.config.minio_keyframe_bucket  # Use dedicated keyframes bucket
+        self.collection = self.db.keyframes  # MongoDB collection for keyframe metadata
     
     def save_keyframe_to_minio(self, video_id: str, frame_data: bytes, frame_number: int, timestamp: float) -> Optional[str]:
         """Save a single keyframe directly to MinIO storage"""
@@ -153,8 +155,10 @@ class KeyframeRepository:
                     except:
                         pass
 
-                    # Generate presigned URL
+                    # Generate presigned URL and API URL
                     presigned_url = self.get_keyframe_presigned_url(obj.object_name, expires=expires)
+                    # Also provide API endpoint URL for direct serving
+                    api_url = f"/api/minio/image/{self.bucket}/{obj.object_name}"
 
                     if presigned_url:
                         keyframes_urls.append({
@@ -162,7 +166,8 @@ class KeyframeRepository:
                             'timestamp': timestamp,
                             'minio_path': obj.object_name,
                             'presigned_url': presigned_url,
-                            'url': presigned_url,  # Alias for compatibility
+                            'url': api_url,  # Use API endpoint for better reliability
+                            'api_url': api_url,
                             'filename': filename
                         })
 
@@ -175,3 +180,49 @@ class KeyframeRepository:
         except Exception as e:
             logger.error(f"❌ Failed to get keyframes presigned URLs for video {video_id}: {e}")
             return []
+    
+    def create_keyframe(self, keyframe_doc: Dict[str, Any]) -> Optional[str]:
+        """
+        Save keyframe metadata to MongoDB
+        
+        Args:
+            keyframe_doc: Dictionary containing keyframe metadata:
+                - camera_id: Camera identifier (for live streams)
+                - video_id: Video identifier (for uploaded videos, optional)
+                - timestamp: Frame timestamp in seconds
+                - timestamp_ms: Frame timestamp in milliseconds
+                - frame_index: Frame number/index
+                - minio_path: Path to keyframe in MinIO
+                - objects_detected: List of detected objects
+                - behaviors_detected: List of detected behaviors
+                - motion_detected: Whether motion was detected
+                - motion_score: Motion detection score
+                - created_at: Creation timestamp
+        
+        Returns:
+            MongoDB document ID or None
+        """
+        try:
+            # Ensure required fields
+            if 'created_at' not in keyframe_doc:
+                keyframe_doc['created_at'] = datetime.utcnow()
+            
+            # Convert numpy types if present
+            try:
+                from database.models import convert_numpy_types, prepare_for_mongodb
+                keyframe_doc = convert_numpy_types(keyframe_doc)
+                keyframe_doc = prepare_for_mongodb(keyframe_doc)
+            except ImportError:
+                # Fallback if models not available
+                pass
+            
+            # Insert into MongoDB
+            result = self.collection.insert_one(keyframe_doc)
+            logger.info(f"✅ Saved keyframe metadata to MongoDB: {keyframe_doc.get('minio_path', 'unknown')}")
+            return str(result.inserted_id)
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to save keyframe metadata to MongoDB: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None

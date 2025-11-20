@@ -11,3 +11,4 @@ faiss-cpu
 numpy
 Pillow
 scikit-learn
+sentence-transformers

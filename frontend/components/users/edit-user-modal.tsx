@@ -2,62 +2,92 @@
 
 import type React from "react"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Eye, EyeOff, Loader2, Shield, Users, EyeIcon } from "lucide-react"
+import { adminApi } from "@/lib/api"
 
-interface AddUserModalProps {
+interface User {
+  user_id: string
+  username?: string
+  name?: string
+  email: string
+  role: string
+  is_active?: boolean
+}
+
+interface EditUserModalProps {
+  user: User
   isOpen: boolean
   onClose: () => void
   onSuccess?: () => void
 }
 
-export function AddUserModal({ isOpen, onClose, onSuccess }: AddUserModalProps) {
+export function EditUserModal({ user, isOpen, onClose, onSuccess }: EditUserModalProps) {
   const [formData, setFormData] = useState({
-    name: "",
-    email: "",
+    name: user.username || user.name || "",
+    email: user.email,
     password: "",
-    role: "",
+    role: user.role || "user",
+    is_active: user.is_active !== false,
   })
   const [showPassword, setShowPassword] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState("")
 
+  useEffect(() => {
+    if (user) {
+      setFormData({
+        name: user.username || user.name || "",
+        email: user.email,
+        password: "",
+        role: user.role || "user",
+        is_active: user.is_active !== false,
+      })
+    }
+  }, [user])
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError("")
 
-    if (!formData.name || !formData.email || !formData.password || !formData.role) {
-      setError("Please fill in all fields")
+    if (!formData.name || !formData.email || !formData.role) {
+      setError("Please fill in all required fields")
       return
     }
 
     setIsLoading(true)
 
     try {
-      const { adminApi } = await import("@/lib/api")
-      await adminApi.createUser({
-        email: formData.email,
-        password: formData.password,
+      const updateData: any = {
         username: formData.name,
         name: formData.name,
+        email: formData.email,
         role: formData.role,
-      })
+        is_active: formData.is_active,
+      }
+
+      // Only include password if it's provided
+      if (formData.password) {
+        updateData.password = formData.password
+      }
+
+      await adminApi.updateUser(user.user_id, updateData)
       setIsLoading(false)
       handleClose()
       if (onSuccess) onSuccess()
     } catch (err: any) {
-      setError(err.message || "Failed to create user")
+      setError(err.message || "Failed to update user")
       setIsLoading(false)
     }
   }
 
   const handleClose = () => {
-    setFormData({ name: "", email: "", password: "", role: "" })
+    setFormData({ name: "", email: "", password: "", role: "user", is_active: true })
     setShowPassword(false)
     setError("")
     onClose()
@@ -93,8 +123,8 @@ export function AddUserModal({ isOpen, onClose, onSuccess }: AddUserModalProps) 
     <Dialog open={isOpen} onOpenChange={handleClose}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Add New User</DialogTitle>
-          <DialogDescription>Create a new team member account with appropriate permissions</DialogDescription>
+          <DialogTitle>Edit User</DialogTitle>
+          <DialogDescription>Update user information and permissions</DialogDescription>
         </DialogHeader>
 
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -122,15 +152,14 @@ export function AddUserModal({ isOpen, onClose, onSuccess }: AddUserModalProps) 
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="password">Password</Label>
+            <Label htmlFor="password">Password (leave blank to keep current)</Label>
             <div className="relative">
               <Input
                 id="password"
                 type={showPassword ? "text" : "password"}
-                placeholder="Create a password"
+                placeholder="Enter new password (optional)"
                 value={formData.password}
                 onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                required
               />
               <Button
                 type="button"
@@ -169,6 +198,12 @@ export function AddUserModal({ isOpen, onClose, onSuccess }: AddUserModalProps) 
                     <span>Viewer</span>
                   </div>
                 </SelectItem>
+                <SelectItem value="user">
+                  <div className="flex items-center space-x-2">
+                    <Users className="h-4 w-4 text-gray-500" />
+                    <span>User</span>
+                  </div>
+                </SelectItem>
               </SelectContent>
             </Select>
             {formData.role && (
@@ -177,6 +212,19 @@ export function AddUserModal({ isOpen, onClose, onSuccess }: AddUserModalProps) 
                 <span>{getRoleDescription(formData.role)}</span>
               </p>
             )}
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="is_active" className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                id="is_active"
+                checked={formData.is_active}
+                onChange={(e) => setFormData({ ...formData, is_active: e.target.checked })}
+                className="rounded"
+              />
+              <span>Active User</span>
+            </Label>
           </div>
 
           {error && <div className="text-destructive text-sm">{error}</div>}
@@ -189,10 +237,10 @@ export function AddUserModal({ isOpen, onClose, onSuccess }: AddUserModalProps) 
               {isLoading ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Adding...
+                  Updating...
                 </>
               ) : (
-                "Add User"
+                "Update User"
               )}
             </Button>
           </div>
@@ -201,3 +249,6 @@ export function AddUserModal({ isOpen, onClose, onSuccess }: AddUserModalProps) 
     </Dialog>
   )
 }
+
+
+

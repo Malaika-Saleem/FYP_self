@@ -599,10 +599,25 @@ export default function VideoResults({ params }: { params: { videoId: string } }
                     >
                       <div className="aspect-video bg-gray-100 dark:bg-gray-700 relative">
                         <img
-                          src={`http://localhost:5000${showOnlyDetections && keyframe.annotated_url ? keyframe.annotated_url : keyframe.url}`}
+                          src={
+                            showOnlyDetections && keyframe.annotated_url 
+                              ? keyframe.annotated_url.startsWith('http') 
+                                ? keyframe.annotated_url 
+                                : `/api/minio/image/detectifai-keyframes/${params.videoId}/keyframes/${keyframe.annotated_url.split('/').pop() || keyframe.filename}`
+                              : keyframe.url?.startsWith('http')
+                                ? keyframe.url
+                                : keyframe.minio_url || keyframe.api_url || `/api/video/${params.videoId}/keyframe/${keyframe.filename}`
+                          }
                           alt={`Keyframe at ${keyframe.timestamp}s`}
                           className="w-full h-full object-cover"
                           loading="lazy"
+                          onError={(e) => {
+                            // Fallback to presigned URL if available
+                            const img = e.target as HTMLImageElement
+                            if (keyframe.presigned_url && img.src !== keyframe.presigned_url) {
+                              img.src = keyframe.presigned_url
+                            }
+                          }}
                         />
                         {keyframe.has_detections && (
                           <div className="absolute top-2 right-2 bg-red-600 text-white text-xs px-2 py-1 rounded">

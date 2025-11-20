@@ -2,10 +2,12 @@
 MinIO storage configuration for DetectifAI
 """
 
-# MinIO bucket names
+# MinIO bucket names (matching actual MinIO buckets)
 VIDEOS_BUCKET = "detectifai-videos"
 KEYFRAMES_BUCKET = "detectifai-keyframes"
 COMPRESSED_BUCKET = "detectifai-compressed"
+NLP_IMAGES_BUCKET = "nlp-images"
+# Note: "detectifai" bucket exists but is not currently used in codebase
 
 # Object prefixes/paths
 ORIGINAL_VIDEO_PREFIX = "original"

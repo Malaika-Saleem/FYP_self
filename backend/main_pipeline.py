@@ -73,7 +73,16 @@ class CompleteVideoProcessingPipeline:
             self.compressor = VideoCompressor(self.config)
             self.report_generator = ReportGenerator(self.config)
             self.object_detector = ObjectDetectionIntegrator(self.config)
-            self.behavior_analyzer = BehaviorAnalysisIntegrator(self.config)
+            
+            # Initialize behavior analyzer if enabled
+            self.behavior_analyzer = None
+            if getattr(self.config, 'enable_behavior_analysis', False):
+                try:
+                    self.behavior_analyzer = BehaviorAnalysisIntegrator(self.config)
+                    logger.info("✅ Behavior analysis enabled")
+                except Exception as e:
+                    logger.warning(f"⚠️ Behavior analysis initialization failed: {e}")
+                    self.config.enable_behavior_analysis = False
             
             logger.info("✅ All pipeline components initialized successfully")
             
@@ -159,7 +168,7 @@ class CompleteVideoProcessingPipeline:
             # Step 3b: Behavior Analysis (if enabled)
             behavior_results = []
             behavior_events = []
-            if self.config.enable_behavior_analysis:
+            if self.config.enable_behavior_analysis and self.behavior_analyzer:
                 logger.info("🔍 Step 3b: Running behavior analysis...")
                 step_start = time.time()
                 
@@ -230,7 +239,7 @@ class CompleteVideoProcessingPipeline:
                             suspicious_frames.extend([result for result in detection_results if result.total_detections > 0])
                         
                         # Also find frames with behavior detections (suspicious activity)
-                        if behavior_results:
+                        if behavior_results and self.behavior_analyzer:
                             behavior_suspicious = self.behavior_analyzer.get_suspicious_frames(behavior_results)
                             suspicious_frames.extend(behavior_suspicious)
                             logger.info(f"🔍 Found {len(behavior_suspicious)} suspicious frames from behavior analysis")
@@ -489,7 +498,7 @@ class CompleteVideoProcessingPipeline:
                     report_paths['object_detection'] = object_detection_report
             
             # Behavior analysis report (if enabled)
-            if self.config.enable_behavior_analysis and behavior_results:
+            if self.config.enable_behavior_analysis and behavior_results and self.behavior_analyzer:
                 behavior_analysis_report = self.report_generator.generate_behavior_analysis_report(
                     behavior_results, self.behavior_analyzer.get_behavior_analysis_summary()
                 )

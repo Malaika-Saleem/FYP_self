@@ -2,7 +2,7 @@
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Search, Upload, Play, Pause, SkipBack, SkipForward, Volume2, FileText, AlertTriangle, Loader2, X, ImageIcon } from "lucide-react"
+import { Search, Upload, Play, Pause, SkipBack, SkipForward, Volume2, FileText, AlertTriangle, Loader2, X, ImageIcon, Video, Square } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { useRouter } from "next/navigation"
 import { useState, useRef, useEffect } from "react"
@@ -24,9 +24,27 @@ interface VideoResults {
     average_confidence?: number
     threat_objects?: string[]
   }
+  behaviors_available?: boolean
+  behaviors_count?: number
+  behaviors_summary?: {
+    total_behaviors?: number
+    by_type?: Record<string, number>
+    most_common?: string
+    average_confidence?: number
+    behavior_types?: string[]
+  }
+  behavior_events?: Array<{
+    event_id: string
+    event_type: string
+    confidence_score: number
+    start_timestamp_ms: number
+    end_timestamp_ms: number
+  }>
   threat_assessment?: any
   compressed_video_url?: string
   compressed_video_available?: boolean
+  annotated_video_url?: string
+  annotated_video_available?: boolean
 }
 
 interface Keyframe {
@@ -64,6 +82,7 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
   const [currentVideoId, setCurrentVideoId] = useState<string | null>(null)
   const [videoResults, setVideoResults] = useState<VideoResults | null>(null)
   const [compressedVideoUrl, setCompressedVideoUrl] = useState<string | null>(null)
+  const [annotatedVideoUrl, setAnnotatedVideoUrl] = useState<string | null>(null)
   const [keyframes, setKeyframes] = useState<Keyframe[]>([])
   const [detectedFaces, setDetectedFaces] = useState<DetectedFace[]>([])
   const [statistics, setStatistics] = useState({
@@ -72,9 +91,14 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
     mostCommonIncident: "None",
     mostActiveZone: "N/A"
   })
+  const [isLiveStreamActive, setIsLiveStreamActive] = useState(false)
+  const [liveStreamStats, setLiveStreamStats] = useState<any>(null)
+  const [liveStreamUrl, setLiveStreamUrl] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
+  const liveVideoRef = useRef<HTMLImageElement>(null)
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
+  const liveStatsIntervalRef = useRef<NodeJS.Timeout | null>(null)
 
   const handleSearchClick = () => {
     router.push("/search")
@@ -107,6 +131,110 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
     fileInputRef.current?.click()
   }
 
+  const handleStartLiveStream = async () => {
+    try {
+      const response = await fetch('/api/live/start', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          camera_id: 'webcam_01',
+          camera_index: 0
+        })
+      })
+
+      const data = await response.json()
+      if (data.success) {
+        const flaskUrl = process.env.NEXT_PUBLIC_FLASK_API_URL || 'http://localhost:5000'
+        const feedUrl = `${flaskUrl}/api/live/feed/webcam_01?t=${Date.now()}`
+        console.log('🎥 Live stream started, feed URL:', feedUrl)
+        
+        // Set the URL state - useEffect will handle setting it on the image element
+        setLiveStreamUrl(feedUrl)
+        setIsLiveStreamActive(true)
+        
+        // Start polling for stats
+        if (liveStatsIntervalRef.current) {
+          clearInterval(liveStatsIntervalRef.current)
+        }
+        liveStatsIntervalRef.current = setInterval(async () => {
+          try {
+            const statsResponse = await fetch('/api/live/stats/webcam_01')
+            if (statsResponse.ok) {
+              const statsData = await statsResponse.json()
+              if (statsData.success) {
+                setLiveStreamStats(statsData.stats)
+              }
+            }
+          } catch (e) {
+            console.error('Error fetching live stats:', e)
+          }
+        }, 2000) // Poll every 2 seconds
+      } else {
+        alert('Failed to start live stream: ' + (data.error || 'Unknown error'))
+      }
+    } catch (error) {
+      console.error('Error starting live stream:', error)
+      alert('Failed to start live stream')
+    }
+  }
+
+  const handleStopLiveStream = async () => {
+    try {
+      const response = await fetch('/api/live/stop/webcam_01', {
+        method: 'POST'
+      })
+
+      const data = await response.json()
+      if (data.success) {
+        setIsLiveStreamActive(false)
+        if (liveVideoRef.current) {
+          liveVideoRef.current.src = ''
+        }
+        if (liveStatsIntervalRef.current) {
+          clearInterval(liveStatsIntervalRef.current)
+          liveStatsIntervalRef.current = null
+        }
+        setLiveStreamStats(null)
+      }
+    } catch (error) {
+      console.error('Error stopping live stream:', error)
+    }
+  }
+
+  // Effect to set image src when live stream becomes active
+  useEffect(() => {
+    if (isLiveStreamActive && liveStreamUrl && liveVideoRef.current) {
+      console.log('🎥 useEffect: Setting live stream src to:', liveStreamUrl)
+      liveVideoRef.current.src = liveStreamUrl
+      
+      // Add error handler
+      liveVideoRef.current.onerror = (e) => {
+        console.error('❌ Live stream image error:', e)
+        console.error('❌ Image src:', liveVideoRef.current?.src)
+        console.error('❌ Image currentSrc:', liveVideoRef.current?.currentSrc)
+      }
+      
+      // Add load handler
+      liveVideoRef.current.onload = () => {
+        console.log('✅ Live stream image loaded successfully')
+      }
+    }
+  }, [isLiveStreamActive, liveStreamUrl])
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (liveStatsIntervalRef.current) {
+        clearInterval(liveStatsIntervalRef.current)
+      }
+      if (isLiveStreamActive) {
+        handleStopLiveStream()
+      }
+    }
+  }, [])
+
   const fetchVideoResults = async (videoId: string) => {
     try {
       console.log('🔄 Fetching video results for:', videoId)
@@ -120,8 +248,10 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
         setCompressedVideoUrl(null)
       }
       
-      // Always set compressed video URL first (will fallback gracefully if not available)
-      console.log('✅ Setting compressed video URL')
+      // Set annotated video URL first (with bounding boxes), fallback to compressed
+      console.log('✅ Setting annotated video URL')
+      setAnnotatedVideoUrl(`/api/video/annotated/${videoId}`)
+      // Also set compressed as fallback
       setCompressedVideoUrl(`/api/video/compressed/${videoId}`)
       
       // Step 1: Fetch video status (includes metadata)
@@ -206,7 +336,9 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
         keyframesToSet = statusData.keyframes_urls.map((kf: any) => ({
           filename: kf.filename || `frame_${kf.frame_number || 0}.jpg`,
           presigned_url: kf.presigned_url,
-          url: kf.presigned_url,
+          url: kf.api_url || kf.url || kf.presigned_url, // Prefer API URL
+          api_url: kf.api_url,
+          minio_url: kf.minio_url,
           timestamp: kf.timestamp || 0,
           has_detections: false // Will be updated from detections
         }))
@@ -223,7 +355,9 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
           const keyframesWithDetections = keyframesData.keyframes.map((kf: any) => ({
             filename: kf.filename,
             presigned_url: kf.presigned_url || kf.url,
-            url: kf.presigned_url || kf.url,
+            url: kf.api_url || kf.minio_url || kf.url || kf.presigned_url, // Prefer API URL
+            api_url: kf.api_url,
+            minio_url: kf.minio_url,
             timestamp: kf.timestamp || 0,
             has_detections: kf.has_detections || false,
             detection_count: kf.detection_count || 0,
@@ -332,7 +466,18 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
   const updateStatistics = (results: VideoResults) => {
     // Extract detection types from results if available
     let mostCommonIncident = "None"
-    if (results.detections_count > 0) {
+    
+    // Prioritize behavior analysis for most common incident
+    if (results.behaviors_summary?.most_common) {
+      const behaviorLabels: Record<string, string> = {
+        'fighting': 'Fighting',
+        'road_accident': 'Road Accident',
+        'wallclimb': 'Wall Climbing'
+      }
+      mostCommonIncident = behaviorLabels[results.behaviors_summary.most_common] || 
+                          results.behaviors_summary.most_common.charAt(0).toUpperCase() + 
+                          results.behaviors_summary.most_common.slice(1).replace('_', ' ')
+    } else if (results.detections_count > 0) {
       // Try to get detection types from results
       const detectionsSummary = results.detections_summary
       if (detectionsSummary && detectionsSummary.by_class) {
@@ -351,7 +496,7 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
     
     setStatistics({
       totalIncidents: results.events_count || 0,
-      activeAlerts: results.detections_count || 0,
+      activeAlerts: (results.detections_count || 0) + (results.behaviors_count || 0),
       mostCommonIncident: mostCommonIncident,
       mostActiveZone: "Current Video"
     })
@@ -583,24 +728,85 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
                 <Play className="h-5 w-5 text-primary" />
                 <span>Video Footage</span>
               </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setShowUploadModal(true)}
-              >
-                <Upload className="w-4 h-4 mr-2" />
-                Upload Videos
-              </Button>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowUploadModal(true)}
+                >
+                  <Upload className="w-4 h-4 mr-2" />
+                  Upload
+                </Button>
+                {!isLiveStreamActive ? (
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={handleStartLiveStream}
+                    className="bg-green-600 hover:bg-green-700"
+                  >
+                    <Video className="w-4 h-4 mr-2" />
+                    Start Live
+                  </Button>
+                ) : (
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={handleStopLiveStream}
+                  >
+                    <Square className="w-4 h-4 mr-2" />
+                    Stop Live
+                  </Button>
+                )}
+              </div>
             </CardTitle>
             <CardDescription>Monitor live surveillance feeds and uploaded videos</CardDescription>
           </CardHeader>
           <CardContent>
+            {/* Live Stream */}
+            {isLiveStreamActive && (
+              <div className="mb-4 space-y-2">
+                <div className="relative bg-black rounded-lg overflow-hidden border">
+                  {liveStreamUrl ? (
+                    <img
+                      ref={liveVideoRef}
+                      src={liveStreamUrl}
+                      alt="Live Stream"
+                      className="w-full h-64 object-contain"
+                      style={{ imageRendering: 'auto' }}
+                      crossOrigin="anonymous"
+                      onError={(e) => {
+                        console.error('❌ Image onError event:', e)
+                        console.error('❌ Image src:', (e.target as HTMLImageElement)?.src)
+                      }}
+                      onLoad={() => {
+                        console.log('✅ Image onLoad event fired')
+                      }}
+                    />
+                  ) : (
+                    <div className="w-full h-64 flex items-center justify-center text-gray-400">
+                      <p>Waiting for stream...</p>
+                    </div>
+                  )}
+                  <div className="absolute top-2 left-2 bg-red-600 text-white px-2 py-1 rounded text-xs font-bold flex items-center gap-1">
+                    <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
+                    LIVE
+                  </div>
+                </div>
+                {liveStreamStats && (
+                  <div className="text-sm text-muted-foreground space-y-1">
+                    <p>Frames: {liveStreamStats.frames_processed} | Objects: {liveStreamStats.objects_detected} | Events: {liveStreamStats.events_created}</p>
+                    <p>FPS: {liveStreamStats.fps?.toFixed(1) || 'N/A'} | Runtime: {Math.floor(liveStreamStats.runtime_seconds || 0)}s</p>
+                  </div>
+                )}
+              </div>
+            )}
+            
             {/* Video Player */}
             <div className="relative bg-black rounded-lg overflow-hidden border">
-              {compressedVideoUrl ? (
+              {(annotatedVideoUrl || compressedVideoUrl) ? (
                 <video
                   ref={videoRef}
-                  src={compressedVideoUrl}
+                  src={annotatedVideoUrl || compressedVideoUrl || undefined}
                   className="w-full h-48 object-contain bg-black"
                   controls
                   preload="metadata"
@@ -609,6 +815,7 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
                     console.log('✅ Video metadata loaded successfully')
                     const videoEl = e.target as HTMLVideoElement
                     console.log('Video duration:', videoEl.duration, 'seconds')
+                    console.log('Video source:', videoEl.src)
                   }}
                   onCanPlay={(e) => {
                     console.log('✅ Video can play')
@@ -628,13 +835,22 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
                       currentSrc: videoEl.currentSrc
                     })
                     
-                    // Try to reload or use alternative source
-                    if (error && error.code === 4) {
+                    // Fallback to compressed video if annotated fails
+                    if (annotatedVideoUrl && compressedVideoUrl && videoEl.src.includes('annotated')) {
+                      console.log('🔄 Annotated video failed, falling back to compressed...')
+                      setTimeout(() => {
+                        if (currentVideoId) {
+                          videoEl.src = `/api/video/compressed/${currentVideoId}?t=${Date.now()}`
+                          videoEl.load()
+                        }
+                      }, 1000)
+                    } else if (error && error.code === 4) {
                       console.log('🔄 Media source error, trying to reload...')
                       setTimeout(() => {
                         if (videoEl.src && currentVideoId) {
-                          // Try reloading with a fresh URL
-                          const newUrl = `/api/video/compressed/${currentVideoId}?t=${Date.now()}`
+                          const newUrl = videoEl.src.includes('annotated') 
+                            ? `/api/video/annotated/${currentVideoId}?t=${Date.now()}`
+                            : `/api/video/compressed/${currentVideoId}?t=${Date.now()}`
                           console.log('🔄 Attempting reload with:', newUrl)
                           videoEl.src = newUrl
                           videoEl.load()
@@ -643,7 +859,7 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
                     }
                   }}
                   onLoadStart={() => {
-                    console.log('🔄 Video load started:', compressedVideoUrl)
+                    console.log('🔄 Video load started:', annotatedVideoUrl || compressedVideoUrl)
                   }}
                   onWaiting={() => {
                     console.log('⏳ Video waiting for data...')
@@ -663,7 +879,7 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
                     }
                   }}
                 >
-                  <source src={compressedVideoUrl} type="video/mp4" />
+                  <source src={annotatedVideoUrl || compressedVideoUrl || undefined} type="video/mp4" />
                   Your browser does not support the video tag.
                 </video>
               ) : (
@@ -718,6 +934,115 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
             >
               Get Report →
             </Button>
+          </CardContent>
+        </Card>
+
+        {/* Behavior Analysis Widget */}
+        <Card className="shadow-lg border-3 shadow-gray-500/50 hover:shadow-gray-500/70 transition-shadow duration-300">
+          <CardHeader className="pb-4">
+            <CardTitle className="flex items-center space-x-2 text-xl">
+              <AlertTriangle className="h-5 w-5 text-orange-500" />
+              <span>Behavior Analysis</span>
+            </CardTitle>
+            <CardDescription>Detected suspicious behaviors and activities</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              {videoResults && videoResults.behaviors_available && videoResults.behaviors_count > 0 ? (
+                <div className="space-y-3">
+                  <div className="flex items-center space-x-3 p-3 bg-orange-500/10 border border-orange-500/20 rounded-lg">
+                    <div className="w-3 h-3 bg-orange-500 rounded-full animate-pulse"></div>
+                    <div className="flex-1">
+                      <span className="text-sm font-medium">Suspicious Behavior Detected</span>
+                      <p className="text-xs text-muted-foreground">{videoResults.behaviors_count} behavior event(s) detected</p>
+                    </div>
+                  </div>
+                  
+                  {/* Show behavior types */}
+                  {videoResults.behaviors_summary?.by_type && Object.keys(videoResults.behaviors_summary.by_type).length > 0 && (
+                    <div className="p-3 bg-muted/50 rounded-lg space-y-2">
+                      <p className="text-xs font-medium mb-2">Detected Behaviors:</p>
+                      <div className="space-y-2">
+                        {Object.entries(videoResults.behaviors_summary.by_type).map(([behaviorType, count]) => {
+                          const behaviorLabels: Record<string, string> = {
+                            'fighting': 'Fighting',
+                            'road_accident': 'Road Accident',
+                            'wallclimb': 'Wall Climbing',
+                            'accident': 'Accident',
+                            'climbing': 'Climbing'
+                          }
+                          const label = behaviorLabels[behaviorType] || behaviorType.charAt(0).toUpperCase() + behaviorType.slice(1).replace('_', ' ')
+                          const colorClass = behaviorType === 'fighting' ? 'bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200' :
+                                            behaviorType === 'road_accident' ? 'bg-orange-100 dark:bg-orange-900 text-orange-800 dark:text-orange-200' :
+                                            'bg-yellow-100 dark:bg-yellow-900 text-yellow-800 dark:text-yellow-200'
+                          
+                          return (
+                            <div key={behaviorType} className="flex items-center justify-between p-2 bg-background rounded border">
+                              <div className="flex items-center space-x-2">
+                                <span className={`text-xs ${colorClass} px-2 py-1 rounded font-medium`}>
+                                  {label}
+                                </span>
+                                <span className="text-xs text-muted-foreground">
+                                  {count as number} occurrence{(count as number) > 1 ? 's' : ''}
+                                </span>
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                      
+                      {videoResults.behaviors_summary.most_common && (
+                        <div className="mt-2 pt-2 border-t">
+                          <p className="text-xs text-muted-foreground">
+                            Most common: <span className="font-medium capitalize">{videoResults.behaviors_summary.most_common.replace('_', ' ')}</span>
+                          </p>
+                          {videoResults.behaviors_summary.average_confidence && (
+                            <p className="text-xs text-muted-foreground">
+                              Avg. confidence: <span className="font-medium">{(videoResults.behaviors_summary.average_confidence * 100).toFixed(1)}%</span>
+                            </p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  
+                  {/* Show recent behavior events */}
+                  {videoResults.behavior_events && videoResults.behavior_events.length > 0 && (
+                    <div className="p-2 bg-muted/30 rounded-lg">
+                      <p className="text-xs font-medium mb-2">Recent Events:</p>
+                      <div className="space-y-1 max-h-32 overflow-y-auto">
+                        {videoResults.behavior_events.slice(0, 5).map((event, idx) => {
+                          const behaviorType = event.event_type.replace('behavior_', '')
+                          const behaviorLabels: Record<string, string> = {
+                            'fighting': 'Fighting',
+                            'road_accident': 'Road Accident',
+                            'wallclimb': 'Wall Climbing'
+                          }
+                          const label = behaviorLabels[behaviorType] || behaviorType.charAt(0).toUpperCase() + behaviorType.slice(1)
+                          const startTime = (event.start_timestamp_ms / 1000).toFixed(1)
+                          const endTime = (event.end_timestamp_ms / 1000).toFixed(1)
+                          
+                          return (
+                            <div key={idx} className="text-xs text-muted-foreground flex items-center justify-between">
+                              <span>{label}</span>
+                              <span className="ml-2">{startTime}s - {endTime}s ({(event.confidence_score * 100).toFixed(0)}%)</span>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="flex items-center space-x-3 p-3 bg-green-500/10 border border-green-500/20 rounded-lg">
+                  <div className="w-3 h-3 bg-green-500 rounded-full"></div>
+                  <div>
+                    <span className="text-sm font-medium">No Suspicious Behaviors</span>
+                    <p className="text-xs text-muted-foreground">No behavior anomalies detected</p>
+                  </div>
+                </div>
+              )}
+            </div>
           </CardContent>
         </Card>
 
@@ -1022,14 +1347,22 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
                         <div className="relative">
                           <img 
                             src={
-                              (keyframe.has_detections && keyframe.annotated_presigned_url) 
-                                ? keyframe.annotated_presigned_url 
-                                : keyframe.presigned_url || keyframe.url || '/placeholder.jpg'
+                              (keyframe.has_detections && keyframe.annotated_url) 
+                                ? (keyframe.annotated_url.startsWith('http') || keyframe.annotated_url.startsWith('/api/'))
+                                  ? keyframe.annotated_url
+                                  : `/api/video/${currentVideoId}/keyframe/${keyframe.annotated_url.split('/').pop() || keyframe.filename}`
+                                : keyframe.api_url || keyframe.minio_url || keyframe.url || keyframe.presigned_url || '/placeholder.jpg'
                             } 
                             alt={`Keyframe ${idx + 1}`}
                             className="w-full h-32 object-cover"
                             onError={(e) => {
-                              (e.target as HTMLImageElement).src = "/placeholder.jpg"
+                              // Try fallback URLs
+                              const img = e.target as HTMLImageElement
+                              if (keyframe.presigned_url && img.src !== keyframe.presigned_url) {
+                                img.src = keyframe.presigned_url
+                              } else {
+                                img.src = "/placeholder.jpg"
+                              }
                             }}
                           />
                           {keyframe.has_detections && (

@@ -24,11 +24,13 @@ def setup_minio():
             secure=False
         )
 
-        # Define required buckets
+        # Define required buckets (matching actual MinIO buckets)
         buckets = [
-            "detectifai-videos",
-            "detectifai-keyframes",
-            "detectifai-compressed"
+            "detectifai",              # General bucket (if needed)
+            "detectifai-videos",       # Original and compressed videos
+            "detectifai-keyframes",    # Extracted keyframes
+            "detectifai-compressed",   # Compressed videos (alternative storage)
+            "nlp-images"              # NLP/caption search images
         ]
 
         # Create buckets if they don't exist

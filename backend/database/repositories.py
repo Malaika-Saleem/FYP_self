@@ -221,6 +221,10 @@ class EventRepository(BaseRepository):
         self.collection = self.db.event
         self.event_description_collection = self.db.event_description
     
+    def create_event(self, event_data: Dict) -> str:
+        """Create event - alias for save_event for compatibility"""
+        return self.save_event(event_data)
+    
     def save_event(self, event_data: Dict) -> str:
         """Save event matching MongoDB schema exactly"""
         try:
@@ -228,7 +232,7 @@ class EventRepository(BaseRepository):
             
             # Extract required fields
             event_id = event_data.get('event_id', str(uuid.uuid4()))
-            video_id = event_data['video_id']
+            video_id = event_data.get('video_id', event_data.get('camera_id', 'unknown'))
             
             # Convert timestamps: seconds (float) -> milliseconds (int)
             start_time = event_data.get('start_timestamp', 0.0)

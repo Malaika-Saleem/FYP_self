@@ -190,9 +190,57 @@ class BehaviorAnalysisIntegrator:
         
         cap.release()
         
-        if len(frame_buffer) < 16:
-            logger.debug(f"Segment too short ({len(frame_buffer)} frames), skipping 3D-ResNet models")
+        # Calculate mid frame index
+        mid_frame_idx = (start_frame + end_frame) // 2 if end_frame > start_frame else start_frame
+        return self._process_frame_buffer(frame_buffer, start_time, end_time, mid_frame_idx, video_path)
+    
+    def detect_behavior_in_segment_from_buffer(self, frame_buffer: List[np.ndarray], 
+                                               start_time: float, end_time: float,
+                                               frame_indices: List[int] = None) -> List[BehaviorDetectionResult]:
+        """
+        Detect behaviors in a frame buffer (for live streams)
+        
+        Args:
+            frame_buffer: List of frames (numpy arrays)
+            start_time: Start timestamp in seconds
+            end_time: End timestamp in seconds
+            frame_indices: Optional list of frame indices
+            
+        Returns:
+            List of BehaviorDetectionResult objects
+        """
+        if not self.enabled or not self.models:
             return []
+        
+        if len(frame_buffer) < 16:
+            logger.debug(f"Frame buffer too short ({len(frame_buffer)} frames), skipping 3D-ResNet models")
+            return []
+        
+        # Use last 16 frames from buffer
+        frames_to_process = frame_buffer[-16:] if len(frame_buffer) >= 16 else frame_buffer
+        mid_frame_idx = len(frame_buffer) // 2 if frame_indices is None else (frame_indices[len(frame_indices) // 2] if frame_indices else len(frame_buffer) // 2)
+        
+        return self._process_frame_buffer(frames_to_process, start_time, end_time, mid_frame_idx, "live_stream")
+    
+    def _process_frame_buffer(self, frame_buffer: List[np.ndarray], start_time: float, 
+                             end_time: float, frame_index: int, video_path: str = "live_stream") -> List[BehaviorDetectionResult]:
+        """
+        Process frame buffer with behavior analysis models
+        
+        Args:
+            frame_buffer: List of frames (numpy arrays)
+            start_time: Start timestamp
+            end_time: End timestamp
+            frame_index: Frame index for result
+            video_path: Path to video file or "live_stream" for live streams
+            
+        Returns:
+            List of BehaviorDetectionResult objects
+        """
+        if len(frame_buffer) < 16:
+            return []
+        
+        results = []
         
         # Process with 3D-ResNet models (need 16-frame clips)
         for model_name, model in self.models.items():
@@ -215,12 +263,11 @@ class BehaviorAnalysisIntegrator:
                 if label != "no_action":
                     # Use middle timestamp of the segment
                     mid_timestamp = (start_time + end_time) / 2
-                    mid_frame_idx = (start_frame + end_frame) // 2
                     
                     result = BehaviorDetectionResult(
-                        frame_path=video_path,  # Video path since we processed a segment
+                        frame_path="live_stream",  # Live stream identifier
                         timestamp=mid_timestamp,
-                        frame_index=mid_frame_idx,
+                        frame_index=frame_index,
                         behavior_detected=label,
                         confidence=conf,
                         model_used=model_name,
@@ -234,12 +281,13 @@ class BehaviorAnalysisIntegrator:
         
         return results
     
-    def detect_behavior_in_keyframes(self, keyframes: List) -> List[BehaviorDetectionResult]:
+    def detect_behavior_in_keyframes(self, keyframes: List, video_path: str = None) -> List[BehaviorDetectionResult]:
         """
         Detect behaviors in keyframes
         
         Args:
             keyframes: List of KeyframeResult objects
+            video_path: Optional path to video file (needed for 3D-ResNet models)
             
         Returns:
             List of BehaviorDetectionResult objects
@@ -251,6 +299,7 @@ class BehaviorAnalysisIntegrator:
         
         all_results = []
         
+        # Process YOLO models (single frame) - wallclimb
         for i, keyframe in enumerate(keyframes):
             # Extract frame path and timestamp
             frame_path = None
@@ -265,9 +314,50 @@ class BehaviorAnalysisIntegrator:
                 timestamp = getattr(keyframe, 'timestamp', 0.0)
             
             if frame_path and os.path.exists(frame_path):
-                # Detect with YOLO models (single frame)
+                # Detect with YOLO models (single frame) - wallclimb
                 frame_results = self.detect_behavior_in_frame(frame_path, timestamp, frame_index)
                 all_results.extend(frame_results)
+        
+        # Process 3D-ResNet models (need 16-frame clips) - fighting, road_accident
+        if video_path and os.path.exists(video_path) and RESNET_MODELS:
+            logger.info(f"🎬 Processing 3D-ResNet models (fighting, road_accident) using video segments...")
+            
+            # Group keyframes into temporal segments for 3D-ResNet processing
+            # Process segments of ~1 second (16 frames at ~30fps) around each keyframe
+            segment_window = 1.0  # 1 second window
+            
+            processed_segments = set()  # Track processed segments to avoid duplicates
+            
+            for keyframe in keyframes:
+                timestamp = 0.0
+                if hasattr(keyframe, 'frame_data'):
+                    timestamp = keyframe.frame_data.timestamp if hasattr(keyframe.frame_data, 'timestamp') else 0.0
+                elif hasattr(keyframe, 'timestamp'):
+                    timestamp = getattr(keyframe, 'timestamp', 0.0)
+                
+                if timestamp > 0:
+                    # Create segment around this keyframe
+                    start_time = max(0, timestamp - segment_window / 2)
+                    end_time = timestamp + segment_window / 2
+                    
+                    # Round to avoid processing same segment multiple times
+                    segment_key = (int(start_time * 10), int(end_time * 10))
+                    
+                    if segment_key not in processed_segments:
+                        processed_segments.add(segment_key)
+                        
+                        try:
+                            # Process segment with 3D-ResNet models
+                            segment_results = self.detect_behavior_in_segment(
+                                video_path=video_path,
+                                start_time=start_time,
+                                end_time=end_time,
+                                frame_indices=None
+                            )
+                            all_results.extend(segment_results)
+                        except Exception as e:
+                            logger.warning(f"⚠️ Error processing segment {start_time:.1f}s-{end_time:.1f}s: {e}")
+                            continue
         
         logger.info(f"✅ Behavior analysis complete: {len(all_results)} behaviors detected")
         return all_results
@@ -370,12 +460,13 @@ class BehaviorAnalysisIntegrator:
         logger.info(f"✅ Created {len(events)} behavior-based events")
         return events
     
-    def process_keyframes_with_behavior_analysis(self, keyframes: List) -> Tuple[List[BehaviorDetectionResult], List[BehaviorEvent]]:
+    def process_keyframes_with_behavior_analysis(self, keyframes: List, video_path: str = None) -> Tuple[List[BehaviorDetectionResult], List[BehaviorEvent]]:
         """
         Process keyframes with behavior analysis and create behavior-based events
         
         Args:
             keyframes: List of KeyframeResult objects
+            video_path: Optional path to video file (needed for 3D-ResNet models)
             
         Returns:
             Tuple of (detection_results, behavior_events)
@@ -386,8 +477,8 @@ class BehaviorAnalysisIntegrator:
         
         logger.info("🔍 Starting behavior analysis integration")
         
-        # Run behavior detection on keyframes
-        detection_results = self.detect_behavior_in_keyframes(keyframes)
+        # Run behavior detection on keyframes (with video_path for 3D-ResNet models)
+        detection_results = self.detect_behavior_in_keyframes(keyframes, video_path=video_path)
         
         # Create behavior-based events
         temporal_window = getattr(self.config, 'behavior_event_temporal_window', 5.0)

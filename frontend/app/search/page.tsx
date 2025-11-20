@@ -31,48 +31,62 @@ export default function SearchPage() {
 
     setIsSearching(true)
     setSearchQuery(query)
+    setSearchType('text')
 
-    // Simulate API call with mock results
-    await new Promise((resolve) => setTimeout(resolve, 1500))
+    try {
+      // Call the Next.js API route (which proxies to Flask)
+      const response = await fetch('/api/search/captions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          query: query,
+          top_k: 10,
+          min_score: 0.0
+        })
+      })
 
-    // Mock search results based on the design document
-    const mockResults = [
-      {
-        id: 1,
-        timestamp: "10:42 PM",
-        description: "Man in red shirt jumping a wall",
-        zone: "Zone 2",
-        thumbnail: "/man-in-red-shirt-jumping-wall-surveillance-footage.jpg",
-        confidence: 0.92,
-      },
-      {
-        id: 2,
-        timestamp: "1:13 AM",
-        description: "Woman fighting with another person",
-        zone: "Zone 1",
-        thumbnail: "/woman-fighting-surveillance-footage.jpg",
-        confidence: 0.87,
-      },
-      {
-        id: 3,
-        timestamp: "3:25 PM",
-        description: "Person loitering near entrance",
-        zone: "Zone 3",
-        thumbnail: "/person-loitering-entrance-surveillance-footage.jpg",
-        confidence: 0.78,
-      },
-      {
-        id: 4,
-        timestamp: "7:18 AM",
-        description: "Suspicious package left unattended",
-        zone: "Zone 2",
-        thumbnail: "/suspicious-package-surveillance-footage.jpg",
-        confidence: 0.85,
-      },
-    ]
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Search failed' }))
+        console.error('Search error:', errorData)
+        setSearchResults([])
+        setIsSearching(false)
+        return
+      }
 
-    setSearchResults(mockResults)
-    setIsSearching(false)
+      const data = await response.json()
+      
+      // Format results for the SearchResults component
+      const formattedResults = data.results.map((result: any, index: number) => {
+        // Build thumbnail URL from video_reference if thumbnail is not provided
+        let thumbnail = result.thumbnail
+        if (!thumbnail && result.video_reference?.object_name && result.video_reference?.bucket) {
+          thumbnail = `/api/minio/image/${result.video_reference.bucket}/${result.video_reference.object_name}`
+        }
+        
+        return {
+          id: result.id || result.description_id || index + 1,
+          timestamp: result.timestamp 
+            ? new Date(result.timestamp).toLocaleTimeString() 
+            : 'N/A',
+          description: result.description || result.caption || '',
+          zone: result.zone || 'N/A',
+          thumbnail: thumbnail || null,  // Don't use placeholder, handle null in component
+          confidence: result.confidence || result.similarity_score || 0.0,
+          similarity_score: result.similarity_score,
+          event_id: result.event_id,
+          video_reference: result.video_reference
+        }
+      })
+
+      setSearchResults(formattedResults)
+    } catch (error) {
+      console.error('Error performing search:', error)
+      setSearchResults([])
+    } finally {
+      setIsSearching(false)
+    }
   }
 
   const handleImageSearchResults = (results: any[]) => {

@@ -35,7 +35,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 MODEL_PATHS = {
     "fight_detection":   os.path.join(BASE_DIR, "fight_detection.pt"),
-    "road_accident":     os.path.join(BASE_DIR, "accident_detection.pt"),
+    "road_accident":     os.path.join(BASE_DIR, "road_accident.pt"),
     "wallclimb":         os.path.join(BASE_DIR, "wallclimb.pt"),
 }
 

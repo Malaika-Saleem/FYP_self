@@ -11,6 +11,7 @@ faiss-cpu
 numpy<2
 Pillow
 scikit-learn
+sentence-transformers
 ultralytics
 torch
 torchvision

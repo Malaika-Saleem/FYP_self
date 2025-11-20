@@ -35,6 +35,15 @@ from minio import Minio
 from minio.error import S3Error
 from vector_index import get_faiss_manager, generate_text_embedding, generate_visual_embedding
 
+# Try to import caption search (optional - may not be available)
+try:
+    from caption_search import get_caption_search_engine
+    CAPTION_SEARCH_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"Caption search not available: {e}")
+    CAPTION_SEARCH_AVAILABLE = False
+    get_caption_search_engine = None
+
 # Try to import DetectifAI-specific components
 try:
     from detectifai_events import DetectifAIEventType, ThreatLevel
@@ -87,7 +96,8 @@ db = mongo.get_default_database()
 
 # Collections from schema
 admin = db.admin
-user = db.user
+user = db.users  # Use 'users' to match database_setup.py
+users = db.users  # Alias for clarity
 video_file = db.video_file
 event = db.event
 event_clip = db.event_clip
@@ -462,6 +472,197 @@ def login():
         }
     })
 
+# === Admin User Management Endpoints ===
+
+@app.route("/api/admin/users", methods=["GET"])
+@auth_required(role="admin")
+def get_all_users():
+    """Get all users - Admin only"""
+    try:
+        # Get query parameters for pagination and filtering
+        page = int(request.args.get("page", 1))
+        limit = int(request.args.get("limit", 50))
+        search = request.args.get("search", "")
+        role_filter = request.args.get("role", "")
+        status_filter = request.args.get("status", "")
+        
+        # Build query
+        query = {}
+        if search:
+            query["$or"] = [
+                {"email": {"$regex": search, "$options": "i"}},
+                {"username": {"$regex": search, "$options": "i"}}
+            ]
+        if role_filter:
+            query["role"] = role_filter
+        if status_filter:
+            if status_filter == "active":
+                query["is_active"] = True
+            elif status_filter == "inactive":
+                query["is_active"] = False
+        
+        # Get total count
+        total = users.count_documents(query)
+        
+        # Get users with pagination
+        skip = (page - 1) * limit
+        user_list = list(users.find(query).skip(skip).limit(limit).sort("created_at", -1))
+        
+        # Remove sensitive data
+        for u in user_list:
+            u["_id"] = str(u["_id"])
+            u.pop("password", None)
+            u.pop("password_hash", None)
+        
+        return jsonify({
+            "users": user_list,
+            "total": total,
+            "page": page,
+            "limit": limit,
+            "pages": (total + limit - 1) // limit
+        })
+    except Exception as e:
+        logger.error(f"Error fetching users: {str(e)}")
+        return jsonify({"error": "Failed to fetch users"}), 500
+
+@app.route("/api/admin/users", methods=["POST"])
+@auth_required(role="admin")
+def create_user():
+    """Create a new user - Admin only"""
+    try:
+        data = request.json or {}
+        email = data.get("email")
+        password = data.get("password")
+        username = data.get("username") or data.get("name")
+        role = data.get("role", "user")
+        
+        if not email or not password:
+            return jsonify({"error": "email and password required"}), 400
+        
+        # Check if user already exists
+        if users.find_one({"email": email}):
+            return jsonify({"error": "User with this email already exists"}), 400
+        
+        # Create user document
+        user_doc = {
+            "user_id": str(uuid4()),
+            "username": username or email.split("@")[0],
+            "email": email,
+            "password": password,  # TODO: hash properly with bcrypt
+            "password_hash": password,  # For compatibility
+            "role": role,
+            "is_active": True,
+            "profile_data": {},
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc),
+            "last_login": None
+        }
+        
+        users.insert_one(user_doc)
+        
+        # Remove sensitive data before returning
+        user_doc["_id"] = str(user_doc["_id"])
+        user_doc.pop("password", None)
+        user_doc.pop("password_hash", None)
+        
+        return jsonify({
+            "message": "User created successfully",
+            "user": user_doc
+        }), 201
+    except Exception as e:
+        logger.error(f"Error creating user: {str(e)}")
+        return jsonify({"error": "Failed to create user"}), 500
+
+@app.route("/api/admin/users/<user_id>", methods=["GET"])
+@auth_required(role="admin")
+def get_user(user_id):
+    """Get a specific user by ID - Admin only"""
+    try:
+        user_doc = users.find_one({"user_id": user_id})
+        if not user_doc:
+            return jsonify({"error": "User not found"}), 404
+        
+        # Remove sensitive data
+        user_doc["_id"] = str(user_doc["_id"])
+        user_doc.pop("password", None)
+        user_doc.pop("password_hash", None)
+        
+        return jsonify({"user": user_doc})
+    except Exception as e:
+        logger.error(f"Error fetching user: {str(e)}")
+        return jsonify({"error": "Failed to fetch user"}), 500
+
+@app.route("/api/admin/users/<user_id>", methods=["PUT"])
+@auth_required(role="admin")
+def update_user(user_id):
+    """Update a user - Admin only"""
+    try:
+        data = request.json or {}
+        user_doc = users.find_one({"user_id": user_id})
+        
+        if not user_doc:
+            return jsonify({"error": "User not found"}), 404
+        
+        # Update allowed fields
+        update_data = {}
+        if "username" in data or "name" in data:
+            update_data["username"] = data.get("username") or data.get("name")
+        if "email" in data:
+            # Check if new email already exists
+            existing = users.find_one({"email": data["email"], "user_id": {"$ne": user_id}})
+            if existing:
+                return jsonify({"error": "Email already in use"}), 400
+            update_data["email"] = data["email"]
+        if "role" in data:
+            update_data["role"] = data["role"]
+        if "is_active" in data:
+            update_data["is_active"] = data["is_active"]
+        if "password" in data and data["password"]:
+            update_data["password"] = data["password"]
+            update_data["password_hash"] = data["password"]
+        
+        if not update_data:
+            return jsonify({"error": "No valid fields to update"}), 400
+        
+        update_data["updated_at"] = datetime.now(timezone.utc)
+        
+        users.update_one({"user_id": user_id}, {"$set": update_data})
+        
+        # Fetch updated user
+        updated_user = users.find_one({"user_id": user_id})
+        updated_user["_id"] = str(updated_user["_id"])
+        updated_user.pop("password", None)
+        updated_user.pop("password_hash", None)
+        
+        return jsonify({
+            "message": "User updated successfully",
+            "user": updated_user
+        })
+    except Exception as e:
+        logger.error(f"Error updating user: {str(e)}")
+        return jsonify({"error": "Failed to update user"}), 500
+
+@app.route("/api/admin/users/<user_id>", methods=["DELETE"])
+@auth_required(role="admin")
+def delete_user(user_id):
+    """Delete a user - Admin only"""
+    try:
+        user_doc = users.find_one({"user_id": user_id})
+        if not user_doc:
+            return jsonify({"error": "User not found"}), 404
+        
+        # Prevent deleting yourself
+        current_user = g.user
+        if current_user.get("user_id") == user_id:
+            return jsonify({"error": "Cannot delete your own account"}), 400
+        
+        users.delete_one({"user_id": user_id})
+        
+        return jsonify({"message": "User deleted successfully"})
+    except Exception as e:
+        logger.error(f"Error deleting user: {str(e)}")
+        return jsonify({"error": "Failed to delete user"}), 500
+
 # === Video Processing Endpoints ===
 
 @app.route('/api/video/upload', methods=['POST'])
@@ -710,6 +911,97 @@ def search_visual():
         
     except Exception as e:
         return jsonify({"error": f"Visual search failed: {str(e)}"}), 500
+
+@app.route("/api/search/captions", methods=["POST"])
+@auth_required()
+def search_captions():
+    """Search captions using FAISS index and sentence transformers"""
+    try:
+        if not CAPTION_SEARCH_AVAILABLE:
+            return jsonify({
+                "error": "Caption search not available",
+                "message": "Caption search module not installed or not available"
+            }), 503
+        
+        data = request.json or {}
+        query_text = data.get("query", "").strip()
+        top_k = data.get("top_k", 10)
+        min_score = data.get("min_score", 0.0)
+        
+        if not query_text:
+            return jsonify({"error": "query is required"}), 400
+        
+        # Get caption search engine
+        search_engine = get_caption_search_engine()
+        
+        if not search_engine or not search_engine.is_ready():
+            return jsonify({
+                "error": "Caption search engine not ready",
+                "stats": search_engine.get_stats() if search_engine else {}
+            }), 503
+        
+        # Perform search
+        results = search_engine.search(query_text, top_k=top_k, min_score=min_score)
+        
+        # Format results for frontend
+        formatted_results = []
+        for result in results:
+            video_ref = result.get("video_reference", {})
+            minio_path = video_ref.get("minio_path", "")
+            object_name = video_ref.get("object_name", "")
+            
+            # Generate MinIO URL for the image/video
+            image_url = None
+            if object_name:
+                try:
+                    bucket = video_ref.get("bucket", "nlp-images")
+                    
+                    # Create bucket if it doesn't exist
+                    try:
+                        if not minio_client.bucket_exists(bucket):
+                            logger.info(f"Creating MinIO bucket: {bucket}")
+                            minio_client.make_bucket(bucket)
+                    except S3Error as e:
+                        if e.code != "BucketAlreadyOwnedByYou" and e.code != "BucketAlreadyExists":
+                            logger.warning(f"Could not create bucket {bucket}: {e}")
+                    
+                    # Generate presigned URL for MinIO object (valid for 1 hour)
+                    from datetime import timedelta
+                    image_url = minio_client.presigned_get_object(
+                        bucket,
+                        object_name,
+                        expires=timedelta(hours=1)
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not generate MinIO URL: {e}")
+                    # Fallback: use unified image serving endpoint
+                    bucket = video_ref.get("bucket", "nlp-images")
+                    image_url = f"/api/minio/image/{bucket}/{object_name}"
+            
+            formatted_result = {
+                "id": result.get("description_id"),
+                "event_id": result.get("event_id"),
+                "description": result.get("caption", ""),
+                "caption": result.get("caption", ""),
+                "confidence": result.get("confidence", 0.0),
+                "similarity_score": result.get("similarity_score", 0.0),
+                "thumbnail": image_url,
+                "video_reference": video_ref,
+                "timestamp": result.get("created_at"),
+                "zone": "N/A"  # Can be enhanced with actual zone data
+            }
+            formatted_results.append(formatted_result)
+        
+        return jsonify({
+            "query": query_text,
+            "results": formatted_results,
+            "total_results": len(formatted_results),
+            "stats": search_engine.get_stats()
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in caption search: {e}")
+        return jsonify({"error": f"Search failed: {str(e)}"}), 500
 
 # === FAISS Management Endpoints ===
 

@@ -357,13 +357,24 @@ class DatabaseIntegratedVideoService:
                                         frame_number = int(timestamp * 30)  # Fallback estimate
                                     
                                     # Process this face_info - Save face to MongoDB detected_faces collection
+                                    # Convert bounding_box array [x1, y1, x2, y2] to bounding_boxes object {x1, y1, x2, y2}
+                                    bounding_box_array = face_info.get('bounding_box', [])
+                                    bounding_boxes_obj = {}
+                                    if isinstance(bounding_box_array, list) and len(bounding_box_array) >= 4:
+                                        bounding_boxes_obj = {
+                                            'x1': int(bounding_box_array[0]),
+                                            'y1': int(bounding_box_array[1]),
+                                            'x2': int(bounding_box_array[2]),
+                                            'y2': int(bounding_box_array[3])
+                                        }
+                                    
                                     face_data = {
                                         'face_id': face_info.get('face_id', f"face_{uuid.uuid4().hex[:8]}"),
                                         'event_id': associated_event_id or f"event_{uuid.uuid4().hex[:8]}",
                                         'detected_at': datetime.utcnow(),
                                         'confidence_score': float(face_info.get('confidence', 0.0)),
-                                        'bounding_box': face_info.get('bounding_box', []),
-                                        'bounding_boxes': face_info.get('bounding_box', []),  # Also store as bounding_boxes for compatibility
+                                        'bounding_box': bounding_box_array,  # Keep array format for backward compatibility
+                                        'bounding_boxes': bounding_boxes_obj,  # Object format required by MongoDB schema
                                         'person_name': face_info.get('person_name'),
                                         'person_confidence': None,
                                         'face_image_path': '',  # Initialize as empty string (schema requires string)
@@ -859,13 +870,16 @@ class DatabaseIntegratedVideoService:
                             minio_path = kf_info.get("minio_path")
                             if minio_path:
                                 presigned_url = self.keyframe_repo.get_keyframe_presigned_url(minio_path)
+                                # Also provide API endpoint URL
+                                api_url = f"/api/minio/image/{self.keyframe_repo.bucket}/{minio_path}"
                                 if presigned_url:
                                     keyframes_urls.append({
                                         'frame_number': kf_info.get("frame_number", 0),
                                         'timestamp': kf_info.get("timestamp", 0.0),
                                         'minio_path': minio_path,
                                         'presigned_url': presigned_url,
-                                        'url': presigned_url,
+                                        'url': api_url,  # Use API endpoint for better reliability
+                                        'api_url': api_url,
                                         'filename': minio_path.split('/')[-1]
                                     })
                     status_data["keyframes_urls"] = keyframes_urls
@@ -1295,7 +1309,8 @@ class DatabaseIntegratedVideoService:
             behavior_events = []
             if enable_behavior_analysis and self.behavior_analyzer:
                 logger.info("🔍 Running behavior analysis...")
-                behavior_results, behavior_events = self.behavior_analyzer.process_keyframes_with_behavior_analysis(keyframes)
+                # Pass video_path for 3D-ResNet models (fighting, road_accident) which need 16-frame clips
+                behavior_results, behavior_events = self.behavior_analyzer.process_keyframes_with_behavior_analysis(keyframes, video_path=video_path)
                 
                 # Store behavior detections in keyframes
                 for i, keyframe in enumerate(keyframes):
@@ -1365,7 +1380,90 @@ class DatabaseIntegratedVideoService:
                 
                 logger.info(f"✅ Stored {len(events)} events in database")
             
-            # Step 5: Video compression (if enabled)
+            # Step 5: Create annotated video with bounding boxes (if detections exist)
+            annotated_video_path = None
+            annotated_minio_path = None
+            if enable_object_detection and detection_results and self.object_detector:
+                try:
+                    logger.info("🎨 Creating annotated video with bounding boxes...")
+                    
+                    # Convert keyframes to detection results format for annotation
+                    detection_result_objects = []
+                    for keyframe in keyframes:
+                        if hasattr(keyframe, 'object_detections') and keyframe.object_detections:
+                            # Create ObjectDetectionResult-like object
+                            from object_detection import ObjectDetectionResult, DetectedObject
+                            from core.video_processing import FrameData
+                            
+                            detected_objects = []
+                            for det in keyframe.object_detections:
+                                detected_objects.append(DetectedObject(
+                                    class_name=det['class_name'],
+                                    confidence=det['confidence'],
+                                    bbox=det['bbox']
+                                ))
+                            
+                            if detected_objects:
+                                frame_data = keyframe.frame_data if hasattr(keyframe, 'frame_data') else None
+                                frame_path = frame_data.frame_path if frame_data else None
+                                timestamp = frame_data.timestamp if frame_data else 0
+                                
+                                if frame_path:
+                                    detection_result_objects.append(ObjectDetectionResult(
+                                        frame_path=frame_path,
+                                        timestamp=timestamp,
+                                        detected_objects=detected_objects,
+                                        total_detections=len(detected_objects)
+                                    ))
+                    
+                    if detection_result_objects:
+                        # Create annotated video
+                        annotated_video_path = f"video_processing_outputs/annotated/{video_id}_annotated.mp4"
+                        os.makedirs(os.path.dirname(annotated_video_path), exist_ok=True)
+                        
+                        annotated_path = self.object_detector.create_annotated_video(
+                            video_path,
+                            detection_result_objects,
+                            annotated_video_path
+                        )
+                        
+                        if annotated_path and os.path.exists(annotated_path):
+                            annotated_video_path = annotated_path
+                            
+                            # Upload annotated video to MinIO
+                            try:
+                                annotated_minio_path = f"annotated/{video_id}/video_annotated.mp4"
+                                with open(annotated_video_path, 'rb') as file_data:
+                                    file_info = os.stat(annotated_video_path)
+                                    self.video_repo.minio.put_object(
+                                        self.video_repo.video_bucket,
+                                        annotated_minio_path,
+                                        file_data,
+                                        length=file_info.st_size,
+                                        content_type='video/mp4'
+                                    )
+                                logger.info(f"✅ Uploaded annotated video to MinIO: {annotated_minio_path}")
+                                
+                                # Update metadata with annotated video path
+                                self.video_repo.update_metadata(video_id, {
+                                    "minio_annotated_path": annotated_minio_path,
+                                    "annotated_video_path": annotated_video_path
+                                })
+                            except Exception as e:
+                                logger.warning(f"⚠️ Failed to upload annotated video to MinIO: {e}")
+                            
+                            logger.info(f"✅ Annotated video created: {annotated_video_path}")
+                        else:
+                            logger.warning("⚠️ Annotated video creation returned no path")
+                    else:
+                        logger.info("ℹ️ No detections found, skipping annotated video creation")
+                        
+                except Exception as e:
+                    logger.warning(f"⚠️ Annotated video creation failed: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+            
+            # Step 6: Video compression (if enabled)
             compression_info = {}
             if enable_compression:
                 try:
@@ -1396,7 +1494,7 @@ class DatabaseIntegratedVideoService:
                 except Exception as e:
                     logger.warning(f"⚠️ Video compression failed: {e}")
             
-            # Step 6: Update final status
+            # Step 7: Update final status
             processing_time = time.time() - start_time
             
             final_meta_data = {
@@ -1408,7 +1506,9 @@ class DatabaseIntegratedVideoService:
                 "event_count": len(events),
                 "processing_time_seconds": round(processing_time, 2),
                 "processed_at": datetime.utcnow().isoformat(),
-                "compressed_video_info": compression_info
+                "compressed_video_info": compression_info,
+                "annotated_video_available": bool(annotated_minio_path),
+                "annotated_video_path": annotated_minio_path
             }
             
             self.video_repo.update_processing_status(video_id, "completed")

@@ -138,12 +138,25 @@ export function SearchResults({ results, query }: SearchResultsProps) {
                   </>
                 ) : result.thumbnail ? (
                   <>
-                    <Image
-                      src={result.thumbnail}
+                    <img
+                      src={
+                        result.thumbnail.startsWith('http') 
+                          ? result.thumbnail 
+                          : result.thumbnail.startsWith('/api/')
+                            ? result.thumbnail
+                            : result.video_reference?.object_name && result.video_reference?.bucket
+                              ? `/api/minio/image/${result.video_reference.bucket}/${result.video_reference.object_name}`
+                              : result.thumbnail
+                      }
                       alt={result.description}
-                      fill
-                      className="object-cover"
-                      sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw"
+                      className="w-full h-full object-cover"
+                      onError={(e) => {
+                        // Use data URI placeholder instead of trying to load a file
+                        const img = e.target as HTMLImageElement
+                        if (!img.src.includes('data:image')) {
+                          img.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjAwIiBoZWlnaHQ9IjQwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjZGRkIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtZmFtaWx5PSJBcmlhbCwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxOCIgZmlsbD0iIzk5OSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZHk9Ii4zZW0iPk5vIEltYWdlPC90ZXh0Pjwvc3ZnPg=='
+                        }
+                      }}
                     />
                     <div className="absolute inset-0 bg-black/20 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity">
                       <Play className="h-8 w-8 text-white" />

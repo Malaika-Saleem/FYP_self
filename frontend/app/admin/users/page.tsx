@@ -1,59 +1,102 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { useAuth } from "@/components/auth-provider"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
-import { ArrowLeft, Search, Edit, Trash2, Plus } from "lucide-react"
+import { ArrowLeft, Search, Edit, Trash2, Plus, Loader2 } from "lucide-react"
 import Link from "next/link"
 import Image from "next/image"
+import { adminApi } from "@/lib/api"
+import { AddUserModal } from "@/components/users/add-user-modal"
+import { EditUserModal } from "@/components/users/edit-user-modal"
 
-// Mock user data
-const mockUsers = [
-  { id: 1, name: "John Doe", email: "john@example.com", organization: "Security Corp", status: "active", plan: "Pro" },
-  {
-    id: 2,
-    name: "Jane Smith",
-    email: "jane@example.com",
-    organization: "SafeGuard Inc",
-    status: "active",
-    plan: "Enterprise",
-  },
-  {
-    id: 3,
-    name: "Mike Johnson",
-    email: "mike@example.com",
-    organization: "WatchTower LLC",
-    status: "inactive",
-    plan: "Basic",
-  },
-  {
-    id: 4,
-    name: "Sarah Wilson",
-    email: "sarah@example.com",
-    organization: "SecureVision",
-    status: "active",
-    plan: "Pro",
-  },
-]
+interface User {
+  user_id: string
+  username?: string
+  name?: string
+  email: string
+  role: string
+  is_active?: boolean
+  created_at?: string
+  organization?: string
+  plan?: string
+}
 
 export default function AdminUsers() {
   const { user, logout } = useAuth()
   const [searchTerm, setSearchTerm] = useState("")
-  const [users, setUsers] = useState(mockUsers)
+  const [users, setUsers] = useState<User[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [showAddModal, setShowAddModal] = useState(false)
+  const [editingUser, setEditingUser] = useState<User | null>(null)
+
+  // Fetch users from backend
+  useEffect(() => {
+    fetchUsers()
+  }, [])
+
+  const fetchUsers = async () => {
+    try {
+      setLoading(true)
+      setError(null)
+      const response = await adminApi.getUsers({
+        search: searchTerm || undefined,
+        limit: 100,
+      })
+      setUsers(response.users || [])
+    } catch (err: any) {
+      console.error("Error fetching users:", err)
+      setError(err.message || "Failed to fetch users")
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Refetch when search term changes (with debounce)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (searchTerm !== undefined) {
+        fetchUsers()
+      }
+    }, 500)
+
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchTerm])
+
+  const handleDeleteUser = async (userId: string) => {
+    if (!confirm("Are you sure you want to delete this user?")) {
+      return
+    }
+
+    try {
+      await adminApi.deleteUser(userId)
+      // Refresh users list
+      fetchUsers()
+    } catch (err: any) {
+      alert(err.message || "Failed to delete user")
+    }
+  }
+
+  const handleUserCreated = () => {
+    setShowAddModal(false)
+    fetchUsers()
+  }
+
+  const handleUserUpdated = () => {
+    setEditingUser(null)
+    fetchUsers()
+  }
 
   const filteredUsers = users.filter(
     (user) =>
-      user.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      user.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      user.organization.toLowerCase().includes(searchTerm.toLowerCase()),
+      (user.username || user.name || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
+      user.email.toLowerCase().includes(searchTerm.toLowerCase()),
   )
-
-  const handleDeleteUser = (userId: number) => {
-    setUsers(users.filter((user) => user.id !== userId))
-  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -88,11 +131,22 @@ export default function AdminUsers() {
 
           <div className="flex items-center justify-between mb-6">
             <h1 className="text-3xl font-bold text-white">User Management</h1>
-            <Button className="bg-primary hover:bg-primary/90 text-primary-foreground">
+            <Button 
+              className="bg-primary hover:bg-primary/90 text-primary-foreground"
+              onClick={() => setShowAddModal(true)}
+            >
               <Plus className="h-4 w-4 mr-2" />
               Add User
             </Button>
           </div>
+
+          {error && (
+            <Card className="bg-destructive/10 border-destructive mb-6">
+              <CardContent className="p-4">
+                <p className="text-destructive">{error}</p>
+              </CardContent>
+            </Card>
+          )}
 
           {/* Search */}
           <Card className="bg-card border-border mb-6">
@@ -115,54 +169,80 @@ export default function AdminUsers() {
               <CardTitle className="text-white">Users ({filteredUsers.length})</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead>
-                    <tr className="border-b border-border">
-                      <th className="text-left py-3 px-4 text-muted-foreground font-medium">Name</th>
-                      <th className="text-left py-3 px-4 text-muted-foreground font-medium">Email</th>
-                      <th className="text-left py-3 px-4 text-muted-foreground font-medium">Organization</th>
-                      <th className="text-left py-3 px-4 text-muted-foreground font-medium">Plan</th>
-                      <th className="text-left py-3 px-4 text-muted-foreground font-medium">Status</th>
-                      <th className="text-left py-3 px-4 text-muted-foreground font-medium">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredUsers.map((user) => (
-                      <tr key={user.id} className="border-b border-border/50">
-                        <td className="py-3 px-4 text-white">{user.name}</td>
-                        <td className="py-3 px-4 text-muted-foreground">{user.email}</td>
-                        <td className="py-3 px-4 text-muted-foreground">{user.organization}</td>
-                        <td className="py-3 px-4">
-                          <Badge variant={user.plan === "Enterprise" ? "default" : "secondary"}>{user.plan}</Badge>
-                        </td>
-                        <td className="py-3 px-4">
-                          <Badge variant={user.status === "active" ? "default" : "destructive"}>{user.status}</Badge>
-                        </td>
-                        <td className="py-3 px-4">
-                          <div className="flex items-center gap-2">
-                            <Button variant="ghost" size="sm">
-                              <Edit className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => handleDeleteUser(user.id)}
-                              className="text-destructive hover:text-destructive"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </div>
-                        </td>
+              {loading ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                </div>
+              ) : filteredUsers.length === 0 ? (
+                <div className="text-center py-12 text-muted-foreground">
+                  <p>No users found</p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead>
+                      <tr className="border-b border-border">
+                        <th className="text-left py-3 px-4 text-muted-foreground font-medium">Name</th>
+                        <th className="text-left py-3 px-4 text-muted-foreground font-medium">Email</th>
+                        <th className="text-left py-3 px-4 text-muted-foreground font-medium">Role</th>
+                        <th className="text-left py-3 px-4 text-muted-foreground font-medium">Status</th>
+                        <th className="text-left py-3 px-4 text-muted-foreground font-medium">Actions</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody>
+                      {filteredUsers.map((user) => (
+                        <tr key={user.user_id} className="border-b border-border/50">
+                          <td className="py-3 px-4 text-white">{user.username || user.name || "N/A"}</td>
+                          <td className="py-3 px-4 text-muted-foreground">{user.email}</td>
+                          <td className="py-3 px-4">
+                            <Badge variant={user.role === "admin" ? "default" : "secondary"}>
+                              {user.role || "user"}
+                            </Badge>
+                          </td>
+                          <td className="py-3 px-4">
+                            <Badge variant={user.is_active !== false ? "default" : "destructive"}>
+                              {user.is_active !== false ? "active" : "inactive"}
+                            </Badge>
+                          </td>
+                          <td className="py-3 px-4">
+                            <div className="flex items-center gap-2">
+                              <Button 
+                                variant="ghost" 
+                                size="sm"
+                                onClick={() => setEditingUser(user)}
+                              >
+                                <Edit className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => handleDeleteUser(user.user_id)}
+                                className="text-destructive hover:text-destructive"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>
       </main>
+
+      <AddUserModal isOpen={showAddModal} onClose={() => setShowAddModal(false)} onSuccess={handleUserCreated} />
+      {editingUser && (
+        <EditUserModal 
+          user={editingUser} 
+          isOpen={!!editingUser} 
+          onClose={() => setEditingUser(null)} 
+          onSuccess={handleUserUpdated}
+        />
+      )}
     </div>
   )
 }

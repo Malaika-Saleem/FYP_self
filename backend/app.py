@@ -9,7 +9,7 @@ Enhanced Flask API for:
 - Frontend integration for surveillance dashboard
 """
 
-from flask import Flask, request, jsonify, send_file, send_from_directory
+from flask import Flask, request, jsonify, send_file, send_from_directory, Response
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 import os
@@ -36,6 +36,21 @@ try:
 except ImportError:
     DETECTIFAI_EVENTS_AVAILABLE = False
     logging.warning("DetectifAI events module not available - using basic functionality")
+
+# Try to import caption search (optional - may not be available)
+try:
+    import sys
+    import os
+    # Add DetectifAI_db to path for imports
+    detectifai_db_path = os.path.join(os.path.dirname(__file__), 'DetectifAI_db')
+    if detectifai_db_path not in sys.path:
+        sys.path.insert(0, detectifai_db_path)
+    from caption_search import get_caption_search_engine
+    CAPTION_SEARCH_AVAILABLE = True
+except ImportError as e:
+    logging.warning(f"Caption search not available: {e}")
+    CAPTION_SEARCH_AVAILABLE = False
+    get_caption_search_engine = None
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -544,6 +559,13 @@ def get_video_results_db(video_id):
         events_data = db_video_service.get_video_events(video_id)
         detections_data = db_video_service.get_video_detections(video_id)
         
+        # Extract behavior analysis events
+        all_events = events_data.get('events', [])
+        behavior_events = [e for e in all_events if e.get('event_type', '').startswith('behavior_')]
+        
+        # Summarize behavior detections
+        behavior_summary = _summarize_behaviors(behavior_events)
+        
         # Get compressed video URL from status
         compressed_video_url = status_data.get('compressed_video_url') or f'/api/video/compressed/{video_id}'
         compressed_video_available = bool(status_data.get('compressed_video_url') or status_data.get('meta_data', {}).get('minio_compressed_path'))
@@ -562,6 +584,10 @@ def get_video_results_db(video_id):
             'detections_available': len(detections_data.get('detections', [])) > 0,
             'detections_count': detections_data.get('total_detections', 0),
             'detections_summary': _summarize_detections(detections_data.get('detections', [])),
+            'behaviors_available': len(behavior_events) > 0,
+            'behaviors_count': len(behavior_events),
+            'behaviors_summary': behavior_summary,
+            'behavior_events': behavior_events[:10],  # First 10 behavior events
             'threat_assessment': _assess_threat_level(events_data.get('events', []), detections_data.get('detections', []))
         }
         
@@ -878,7 +904,8 @@ def get_keyframes(video_id):
             keyframe_data = {
                 'filename': filename,
                 'timestamp': timestamp,
-                'url': f'/api/keyframe/{video_id}/{filename}',
+                'url': f'/api/video/{video_id}/keyframe/{filename}',
+                'minio_url': f'/api/minio/image/detectifai-keyframes/{video_id}/keyframes/{filename}',
                 'has_detections': has_detections
             }
             
@@ -1161,6 +1188,108 @@ def debug_compressed_video(video_id):
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/video/<video_id>/compressed', methods=['GET'])
+@app.route('/api/video/annotated/<video_id>', methods=['GET'])
+@app.route('/api/v2/video/annotated/<video_id>', methods=['GET'])
+def serve_annotated_video(video_id):
+    """Serve annotated video with bounding boxes from MinIO or local storage"""
+    logger.info(f"🎨 Request to serve annotated video: {video_id}")
+    try:
+        # First try to get from database/MinIO
+        video_record = None
+        video_exists_in_db = False
+        status_data = None
+        meta_data = {}
+        
+        if DATABASE_ENABLED:
+            try:
+                status_data = db_video_service.get_video_status(video_id)
+                if 'error' not in status_data:
+                    video_exists_in_db = True
+                    logger.info(f"✅ Found video in database: {video_id}")
+                    
+                    # Get video record directly
+                    try:
+                        video_record = db_video_service.video_repo.get_video_by_id(video_id)
+                    except Exception as e:
+                        logger.warning(f"Could not get video record: {e}")
+                    
+                    # Get metadata
+                    if status_data:
+                        meta_data = status_data.get('meta_data', {})
+                    if not meta_data and video_record:
+                        meta_data = video_record.get('meta_data', {})
+                    
+                    # Use detectifai-videos bucket
+                    video_bucket = "detectifai-videos"
+                    if video_record:
+                        record_bucket = video_record.get('minio_bucket')
+                        if record_bucket == "detectifai-videos":
+                            video_bucket = record_bucket
+                    
+                    # Get annotated video path from metadata
+                    minio_annotated_path = meta_data.get('minio_annotated_path')
+                    annotated_video_available = meta_data.get('annotated_video_available', False)
+                    
+                    logger.info(f"📁 MinIO annotated path: {minio_annotated_path}")
+                    logger.info(f"📁 Annotated video available: {annotated_video_available}")
+                    
+                    # Try to serve from MinIO
+                    if minio_annotated_path and annotated_video_available:
+                        try:
+                            from minio.error import S3Error
+                            minio_client = db_video_service.video_repo.minio
+                            
+                            # Check if object exists
+                            try:
+                                minio_client.stat_object(video_bucket, minio_annotated_path)
+                                
+                                # Generate presigned URL
+                                from datetime import timedelta
+                                presigned_url = minio_client.presigned_get_object(
+                                    video_bucket,
+                                    minio_annotated_path,
+                                    expires=timedelta(hours=1)
+                                )
+                                logger.info(f"✅ Generated presigned URL for annotated video: {minio_annotated_path}")
+                                return redirect(presigned_url)
+                            except S3Error as e:
+                                if e.code == 'NoSuchKey':
+                                    logger.warning(f"⚠️ Annotated video not found in MinIO: {minio_annotated_path}")
+                                else:
+                                    logger.error(f"❌ MinIO error: {e}")
+                        except Exception as e:
+                            logger.warning(f"⚠️ Failed to get annotated video from MinIO: {e}")
+                    
+                    # Try local file
+                    annotated_video_path = meta_data.get('annotated_video_path')
+                    if annotated_video_path and os.path.exists(annotated_video_path):
+                        logger.info(f"✅ Serving annotated video from local path: {annotated_video_path}")
+                        return send_file(annotated_video_path, mimetype='video/mp4')
+                    
+            except Exception as e:
+                logger.error(f"❌ Error getting video status: {e}")
+        
+        # Fallback: check local storage
+        output_dir = os.path.join(OUTPUT_FOLDER, video_id)
+        annotated_dir = os.path.join(output_dir, 'annotated')
+        
+        if os.path.exists(annotated_dir):
+            video_files = [f for f in os.listdir(annotated_dir) if f.endswith('.mp4')]
+            if video_files:
+                video_filename = video_files[0]
+                logger.info(f"✅ Serving annotated video from local directory: {annotated_dir}/{video_filename}")
+                return send_from_directory(annotated_dir, video_filename)
+        
+        # If no annotated video, fallback to compressed or original
+        logger.warning(f"⚠️ Annotated video not found for {video_id}, falling back to compressed")
+        return serve_compressed_video(video_id)
+        
+    except Exception as e:
+        logger.error(f"❌ Error serving annotated video: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({'error': f'Failed to serve annotated video: {str(e)}'}), 500
+
 @app.route('/api/video/compressed/<video_id>', methods=['GET'])
 @app.route('/api/v2/video/compressed/<video_id>', methods=['GET'])
 def serve_compressed_video(video_id):
@@ -1423,27 +1552,29 @@ def serve_compressed_video(video_id):
                     import traceback
                     logger.error(f"Traceback: {traceback.format_exc()}")
             
-            if not video_data:
-                raise Exception(f"Could not retrieve video from MinIO. Tried {len(possible_paths)} paths in buckets {video_bucket} and {compression_bucket}")
-            
-            video_bytes = video_data.read()
-            video_data.close()
-            video_data.release_conn()
-            
-            response = send_file(
-                BytesIO(video_bytes),
-                mimetype='video/mp4',
-                as_attachment=False,
-                download_name=f"{video_id}_compressed.mp4"
-            )
-            response.headers['Accept-Ranges'] = 'bytes'
-            response.headers['Cache-Control'] = 'no-cache'
-            response.headers['Access-Control-Allow-Origin'] = '*'
-            response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
-            response.headers['Access-Control-Allow-Headers'] = 'Range'
-            response.headers['Content-Type'] = 'video/mp4'
-            logger.info(f"✅ Served compressed video from MinIO for {video_id}")
-            return response
+            if video_data:
+                # Successfully found video in MinIO
+                video_bytes = video_data.read()
+                video_data.close()
+                video_data.release_conn()
+                
+                response = send_file(
+                    BytesIO(video_bytes),
+                    mimetype='video/mp4',
+                    as_attachment=False,
+                    download_name=f"{video_id}_compressed.mp4"
+                )
+                response.headers['Accept-Ranges'] = 'bytes'
+                response.headers['Cache-Control'] = 'no-cache'
+                response.headers['Access-Control-Allow-Origin'] = '*'
+                response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+                response.headers['Access-Control-Allow-Headers'] = 'Range'
+                response.headers['Content-Type'] = 'video/mp4'
+                logger.info(f"✅ Served compressed video from MinIO for {video_id}")
+                return response
+            else:
+                logger.warning(f"⚠️ Could not retrieve video from MinIO. Tried {len(possible_paths)} paths in buckets {video_bucket} and {compression_bucket}")
+                # Fall through to local storage check
         except S3Error as e:
             logger.warning(f"⚠️ MinIO retrieval failed (S3Error), falling back to local storage: {e}")
             import traceback
@@ -1506,6 +1637,37 @@ def serve_compressed_video(video_id):
             os.path.join("video_processing_outputs", "compressed"),  # Check root compressed dir
             os.path.join(OUTPUT_FOLDER, "compressed", video_id),  # Alternative location
         ])
+        
+        # Also add direct file paths that might be stored in metadata
+        possible_file_paths = [
+            os.path.join("video_processing_outputs", "compressed", f"{video_id}_compressed.mp4"),
+            os.path.join(OUTPUT_FOLDER, "compressed", f"{video_id}_compressed.mp4"),
+            os.path.join("video_processing_outputs", "compressed", video_id, "video.mp4"),
+            os.path.join(OUTPUT_FOLDER, video_id, "compressed", "video.mp4"),
+        ]
+        
+        # Check direct file paths first
+        for file_path in possible_file_paths:
+            if os.path.exists(file_path) and os.path.isfile(file_path) and os.path.getsize(file_path) > 0:
+                logger.info(f"✅ Found compressed video file: {file_path} ({os.path.getsize(file_path)} bytes)")
+                try:
+                    response = send_file(
+                        file_path,
+                        mimetype='video/mp4',
+                        as_attachment=False,
+                        download_name=os.path.basename(file_path)
+                    )
+                    response.headers['Accept-Ranges'] = 'bytes'
+                    response.headers['Cache-Control'] = 'no-cache'
+                    response.headers['Access-Control-Allow-Origin'] = '*'
+                    response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+                    response.headers['Access-Control-Allow-Headers'] = 'Range'
+                    response.headers['Content-Type'] = 'video/mp4'
+                    logger.info(f"✅ Serving compressed video from file path: {file_path}")
+                    return response
+                except Exception as e:
+                    logger.warning(f"Failed to serve from file path {file_path}: {e}")
+                    continue
         
         # Also check if local_path_from_service is a direct file path
         if local_path_from_service and os.path.exists(local_path_from_service) and os.path.isfile(local_path_from_service):
@@ -1717,6 +1879,9 @@ def serve_keyframe(video_id, filename):
                         as_attachment=False
                     )
                     response.headers['Cache-Control'] = 'public, max-age=3600'
+                    response.headers['Access-Control-Allow-Origin'] = '*'
+                    response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+                    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
                     logger.info(f"✅ Served keyframe from MinIO: {minio_path}")
                     return response
                 except S3Error as e:
@@ -1729,11 +1894,13 @@ def serve_keyframe(video_id, filename):
         keyframe_path = os.path.join(frames_dir, filename)
         
         if os.path.exists(keyframe_path):
-            return send_file(
+            response = send_file(
                 keyframe_path,
                 mimetype='image/jpeg',
                 as_attachment=False
             )
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
         
         return jsonify({'error': 'Keyframe not found'}), 404
         
@@ -1741,7 +1908,160 @@ def serve_keyframe(video_id, filename):
         logger.error(f"Error serving keyframe: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/minio/image/<bucket>/<path:object_path>', methods=['GET'])
+def serve_minio_image(bucket, object_path):
+    """
+    Unified endpoint to serve images from MinIO buckets
+    Supports:
+    - Keyframes: detectifai-keyframes/{video_id}/keyframes/frame_*.jpg
+    - Live stream keyframes: detectifai-keyframes/live/{camera_id}/*.jpg
+    - NLP images: nlp-images/*.jpg
+    - Face images: detectifai-faces/*.jpg
+    """
+    try:
+        from io import BytesIO
+        from minio.error import S3Error
+        
+        if not DATABASE_ENABLED:
+            return jsonify({'error': 'Database service not available'}), 503
+        
+        # Get MinIO client
+        minio_client = db_video_service.db_manager.minio_client
+        
+        # Verify bucket exists
+        if not minio_client.bucket_exists(bucket):
+            logger.warning(f"Bucket {bucket} does not exist")
+            return jsonify({'error': f'Bucket {bucket} not found'}), 404
+        
+        try:
+            # Get object from MinIO
+            image_data = minio_client.get_object(bucket, object_path)
+            image_bytes = image_data.read()
+            image_data.close()
+            image_data.release_conn()
+            
+            # Determine content type from file extension
+            content_type = 'image/jpeg'
+            if object_path.lower().endswith('.png'):
+                content_type = 'image/png'
+            elif object_path.lower().endswith('.webp'):
+                content_type = 'image/webp'
+            elif object_path.lower().endswith('.gif'):
+                content_type = 'image/gif'
+            
+            response = send_file(
+                BytesIO(image_bytes),
+                mimetype=content_type,
+                as_attachment=False
+            )
+            response.headers['Cache-Control'] = 'public, max-age=3600'
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+            response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+            
+            logger.info(f"✅ Served image from MinIO: {bucket}/{object_path}")
+            return response
+            
+        except S3Error as e:
+            logger.error(f"MinIO error retrieving {bucket}/{object_path}: {e}")
+            if e.code == 'NoSuchKey':
+                return jsonify({'error': 'Image not found in MinIO'}), 404
+            return jsonify({'error': f'MinIO error: {str(e)}'}), 500
+            
+    except Exception as e:
+        logger.error(f"Error serving MinIO image: {e}")
+        return jsonify({'error': f'Error serving image: {str(e)}'}), 500
+
+@app.route('/api/minio/presigned/<bucket>/<path:object_path>', methods=['GET'])
+def get_minio_presigned_url(bucket, object_path):
+    """
+    Generate presigned URL for MinIO object
+    Useful for direct client access to images
+    """
+    try:
+        from datetime import timedelta
+        from minio.error import S3Error
+        
+        if not DATABASE_ENABLED:
+            return jsonify({'error': 'Database service not available'}), 503
+        
+        # Get expiration time from query parameter (default 1 hour)
+        expires_hours = request.args.get('expires', 1, type=int)
+        expires = timedelta(hours=expires_hours)
+        
+        # Get MinIO client
+        minio_client = db_video_service.db_manager.minio_client
+        
+        # Verify bucket exists
+        if not minio_client.bucket_exists(bucket):
+            return jsonify({'error': f'Bucket {bucket} not found'}), 404
+        
+        try:
+            # Generate presigned URL
+            presigned_url = minio_client.presigned_get_object(
+                bucket,
+                object_path,
+                expires=expires
+            )
+            
+            return jsonify({
+                'success': True,
+                'url': presigned_url,
+                'bucket': bucket,
+                'object_path': object_path,
+                'expires_in_hours': expires_hours
+            })
+            
+        except S3Error as e:
+            logger.error(f"MinIO error generating presigned URL: {e}")
+            return jsonify({'error': f'MinIO error: {str(e)}'}), 500
+            
+    except Exception as e:
+        logger.error(f"Error generating presigned URL: {e}")
+        return jsonify({'error': f'Error: {str(e)}'}), 500
+
 # ====== HELPER FUNCTIONS ======
+
+def _summarize_behaviors(behavior_events: List[Dict]) -> Dict:
+    """Summarize behavior analysis results"""
+    if not behavior_events:
+        return {
+            'total_behaviors': 0,
+            'by_type': {},
+            'most_common': None,
+            'average_confidence': 0.0,
+            'behavior_types': []
+        }
+    
+    # Count behaviors by type
+    behavior_counts = {}
+    confidences = []
+    behavior_types = []
+    
+    for event in behavior_events:
+        event_type = event.get('event_type', '')
+        # Extract behavior type from "behavior_fighting" -> "fighting"
+        if event_type.startswith('behavior_'):
+            behavior_type = event_type.replace('behavior_', '')
+            behavior_types.append(behavior_type)
+            behavior_counts[behavior_type] = behavior_counts.get(behavior_type, 0) + 1
+            
+            confidence = event.get('confidence_score', 0.0)
+            if confidence:
+                confidences.append(float(confidence))
+    
+    # Get most common behavior
+    most_common = None
+    if behavior_counts:
+        most_common = max(behavior_counts.items(), key=lambda x: x[1])[0]
+    
+    return {
+        'total_behaviors': len(behavior_events),
+        'by_type': behavior_counts,
+        'most_common': most_common,
+        'average_confidence': sum(confidences) / len(confidences) if confidences else 0.0,
+        'behavior_types': list(set(behavior_types))
+    }
 
 def _summarize_events(events: List[Dict]) -> Dict:
     """Summarize events by type and threat level"""
@@ -2341,6 +2661,298 @@ def get_face_image(face_id):
     except Exception as e:
         logger.error(f"Error serving face image {face_id}: {e}")
         return jsonify({'error': 'Error serving face image'}), 500
+
+@app.route("/api/search/captions", methods=["POST"])
+def search_captions():
+    """Search captions using FAISS index and sentence transformers"""
+    try:
+        if not CAPTION_SEARCH_AVAILABLE:
+            return jsonify({
+                "error": "Caption search not available",
+                "message": "Caption search module not installed or not available"
+            }), 503
+        
+        data = request.json or {}
+        query_text = data.get("query", "").strip()
+        top_k = data.get("top_k", 10)
+        min_score = data.get("min_score", 0.0)
+        
+        if not query_text:
+            return jsonify({"error": "query is required"}), 400
+        
+        # Get caption search engine
+        search_engine = get_caption_search_engine()
+        
+        if not search_engine or not search_engine.is_ready():
+            return jsonify({
+                "error": "Caption search engine not ready",
+                "stats": search_engine.get_stats() if search_engine else {}
+            }), 503
+        
+        # Perform search
+        results = search_engine.search(query_text, top_k=top_k, min_score=min_score)
+        
+        # Format results for frontend
+        formatted_results = []
+        for result in results:
+            video_ref = result.get("video_reference", {})
+            object_name = video_ref.get("object_name", "")
+            bucket = video_ref.get("bucket", "nlp-images")
+            
+            # Generate MinIO URL for the image/video
+            image_url = None
+            if object_name and bucket:
+                try:
+                    # Use the unified image serving endpoint (more reliable than presigned URLs)
+                    # bucket is already set above
+                    image_url = f"/api/minio/image/{bucket}/{object_name}"
+                    
+                    # Also try to verify the object exists and generate presigned URL as backup
+                    if DATABASE_ENABLED:
+                        try:
+                            from datetime import timedelta
+                            from minio.error import S3Error
+                            minio_client = db_video_service.db_manager.minio_client
+                            
+                            # Create bucket if it doesn't exist
+                            try:
+                                if not minio_client.bucket_exists(bucket):
+                                    logger.info(f"Creating MinIO bucket: {bucket}")
+                                    minio_client.make_bucket(bucket)
+                            except S3Error as e:
+                                if e.code != "BucketAlreadyOwnedByYou" and e.code != "BucketAlreadyExists":
+                                    logger.warning(f"Could not create bucket {bucket}: {e}")
+                            
+                            # Verify object exists
+                            try:
+                                minio_client.stat_object(bucket, object_name)
+                                # Object exists, use presigned URL as primary
+                                presigned_url = minio_client.presigned_get_object(
+                                    bucket,
+                                    object_name,
+                                    expires=timedelta(hours=1)
+                                )
+                                # Use presigned URL if available, otherwise use API endpoint
+                                image_url = presigned_url if presigned_url else image_url
+                            except S3Error as e:
+                                if e.code == 'NoSuchKey':
+                                    logger.warning(f"Image not found in MinIO: {bucket}/{object_name}")
+                                    image_url = None  # Will use placeholder
+                                else:
+                                    logger.warning(f"MinIO error checking object: {e}")
+                        except Exception as e:
+                            logger.warning(f"Could not verify MinIO object: {e}")
+                            # Keep the API endpoint URL as fallback
+                except Exception as e:
+                    logger.warning(f"Could not generate MinIO URL: {e}")
+                    image_url = None
+            
+            formatted_result = {
+                "id": result.get("description_id"),
+                "event_id": result.get("event_id"),
+                "description": result.get("caption", ""),
+                "caption": result.get("caption", ""),
+                "confidence": result.get("confidence", 0.0),
+                "similarity_score": result.get("similarity_score", 0.0),
+                "thumbnail": image_url,  # Will be None if image doesn't exist
+                "video_reference": video_ref,
+                "timestamp": result.get("created_at"),
+                "zone": "N/A"  # Can be enhanced with actual zone data
+            }
+            formatted_results.append(formatted_result)
+        
+        return jsonify({
+            "query": query_text,
+            "results": formatted_results,
+            "total_results": len(formatted_results),
+            "stats": search_engine.get_stats()
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in caption search: {e}")
+        return jsonify({"error": f"Search failed: {str(e)}"}), 500
+
+# ====== LIVE STREAM ENDPOINTS ======
+
+@app.route('/api/live/start', methods=['POST'])
+def start_live_stream():
+    """Start live stream processing from webcam"""
+    try:
+        data = request.json or {}
+        camera_id = data.get('camera_id', 'webcam_01')
+        camera_index = data.get('camera_index', 0)  # 0 = default webcam
+        
+        from live_stream_processor import get_live_processor
+        
+        processor = get_live_processor(camera_id, get_security_focused_config())
+        
+        if processor.is_processing:
+            return jsonify({
+                'success': False,
+                'error': f'Live stream already running for camera {camera_id}'
+            }), 400
+        
+        # Just mark as ready - actual processing happens in feed endpoint
+        processor.camera_index = camera_index
+        
+        return jsonify({
+            'success': True,
+            'camera_id': camera_id,
+            'message': 'Live stream ready',
+            'video_feed_url': f'/api/live/feed/{camera_id}'
+        })
+        
+    except Exception as e:
+        logger.error(f"Error starting live stream: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/live/feed/<camera_id>')
+def live_video_feed(camera_id):
+    """Video feed endpoint for live stream - streams frames directly"""
+    logger.info(f"🎬 ===== VIDEO FEED REQUESTED ===== camera_id: {camera_id}")
+    try:
+        from live_stream_processor import get_live_processor
+        
+        processor = get_live_processor(camera_id)
+        camera_index = getattr(processor, 'camera_index', 0)
+        
+        logger.info(f"📹 Video feed requested for camera {camera_id} (index {camera_index})")
+        logger.info(f"📹 Processor is_processing: {processor.is_processing}")
+        logger.info(f"📹 Processor camera_index attribute: {getattr(processor, 'camera_index', 'NOT SET')}")
+        
+        # The generate_frames generator will handle the camera and processing
+        # This runs in the same thread as the Flask response
+        def generate():
+            frame_count = 0
+            try:
+                logger.info(f"🎬 Starting frame generation for {camera_id}")
+                for frame_data in processor.generate_frames(camera_index):
+                    frame_count += 1
+                    if frame_count % 30 == 0:  # Log every 30 frames
+                        logger.info(f"📹 Streaming frame {frame_count} for {camera_id}")
+                    yield frame_data
+            except Exception as gen_error:
+                logger.error(f"❌ Error in frame generator: {gen_error}")
+                import traceback
+                logger.error(traceback.format_exc())
+                # Yield an error frame
+                try:
+                    error_frame = processor._create_error_frame(f"Stream error: {str(gen_error)}")
+                    import cv2
+                    ret, buffer = cv2.imencode('.jpg', error_frame)
+                    if ret:
+                        yield (b'--frame\r\n'
+                               b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+                except Exception as frame_error:
+                    logger.error(f"❌ Could not create error frame: {frame_error}")
+        
+        return Response(
+            generate(),
+            mimetype='multipart/x-mixed-replace; boundary=frame',
+            headers={
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                'Pragma': 'no-cache',
+                'Expires': '0',
+                'X-Accel-Buffering': 'no',  # Disable buffering for nginx
+                'Connection': 'keep-alive',
+                'Access-Control-Allow-Origin': '*',  # CORS header
+                'Access-Control-Allow-Methods': 'GET',
+                'Access-Control-Allow-Headers': 'Content-Type'
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Error in video feed endpoint: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/live/stop/<camera_id>', methods=['POST'])
+def stop_live_stream(camera_id):
+    """Stop live stream processing"""
+    try:
+        from live_stream_processor import stop_live_processor
+        
+        stop_live_processor(camera_id)
+        
+        return jsonify({
+            'success': True,
+            'message': f'Live stream stopped for camera {camera_id}'
+        })
+        
+    except Exception as e:
+        logger.error(f"Error stopping live stream: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/live/stats/<camera_id>', methods=['GET'])
+def get_live_stats(camera_id):
+    """Get live stream processing statistics"""
+    try:
+        from live_stream_processor import get_live_processor
+        
+        processor = get_live_processor(camera_id)
+        stats = processor.get_stats()
+        
+        return jsonify({
+            'success': True,
+            'camera_id': camera_id,
+            'stats': stats
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting live stats: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/live/test-camera', methods=['GET'])
+def test_camera():
+    """Test if camera is available - helps debug camera issues"""
+    try:
+        import cv2
+        
+        camera_index = int(request.args.get('index', 0))
+        
+        logger.info(f"🔍 Testing camera {camera_index}...")
+        cap = cv2.VideoCapture(camera_index)
+        
+        if not cap.isOpened():
+            return jsonify({
+                'success': False,
+                'available': False,
+                'camera_index': camera_index,
+                'message': f'Camera {camera_index} could not be opened. Make sure the camera is connected and not in use by another application.'
+            }), 200
+        
+        # Try to read a frame
+        ret, frame = cap.read()
+        cap.release()
+        
+        if ret and frame is not None:
+            return jsonify({
+                'success': True,
+                'available': True,
+                'camera_index': camera_index,
+                'message': f'Camera {camera_index} is working correctly',
+                'frame_size': f'{frame.shape[1]}x{frame.shape[0]}',
+                'frame_channels': frame.shape[2] if len(frame.shape) > 2 else 1
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'available': False,
+                'camera_index': camera_index,
+                'message': f'Camera {camera_index} opened but cannot read frames. The camera may be in use or not functioning properly.'
+            }), 200
+        
+    except Exception as e:
+        logger.error(f"Error testing camera: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'available': False,
+            'error': str(e),
+            'message': f'Error testing camera: {str(e)}'
+        }), 500
 
 if __name__ == '__main__':
     logger.info("Starting DetectifAI Flask API server...")
