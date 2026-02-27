@@ -1,9 +1,29 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { getServerSession } from 'next-auth'
+import { authOptions } from '@/lib/auth-config'
 
 const FLASK_API_URL = process.env.FLASK_API_URL || 'http://localhost:5000'
 
 export async function POST(request: NextRequest) {
   try {
+    // Get session server-side to ensure user_id is always available
+    const session = await getServerSession(authOptions)
+
+    if (!session || !session.user) {
+      return NextResponse.json(
+        { error: 'Authentication required', message: 'Please sign in to search' },
+        { status: 401 }
+      )
+    }
+
+    const userId = (session.user as any).id
+    if (!userId) {
+      return NextResponse.json(
+        { error: 'User ID not found in session', message: 'Please sign in again' },
+        { status: 401 }
+      )
+    }
+
     const body = await request.json()
     const { query, top_k = 10, min_score = 0.0 } = body
 
@@ -14,20 +34,17 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Get auth token from request headers (passed from frontend)
-    const authHeader = request.headers.get('authorization')
-    
-    // Call Flask API
+    // Call Flask API with user_id for subscription/feature gating
     const response = await fetch(`${FLASK_API_URL}/api/search/captions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(authHeader && { 'Authorization': authHeader })
       },
       body: JSON.stringify({
         query: query.trim(),
         top_k,
-        min_score
+        min_score,
+        user_id: userId
       })
     })
 

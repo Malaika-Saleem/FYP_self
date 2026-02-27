@@ -5,14 +5,88 @@ import { SearchInterface } from "@/components/search/search-interface"
 import { SearchResults } from "@/components/search/search-results"
 import { UploadImageModal } from "@/components/search/upload-image-modal"
 import { Button } from "@/components/ui/button"
-import { ArrowLeft, LogOut } from "lucide-react"
+import { ArrowLeft, LogOut, Lock, Crown, Shield, Sparkles, TrendingUp, Zap, X } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { useEffect, useState } from "react"
 import Link from "next/link"
 import Image from "next/image"
+import { SubscriptionProvider, useSubscription } from "@/contexts/subscription-context"
 
+// ─── Wrapper that injects SubscriptionProvider ───────────────────────────────
 export default function SearchPage() {
+  return (
+    <SubscriptionProvider>
+      <SearchPageInner />
+    </SubscriptionProvider>
+  )
+}
+
+// ─── Full-page Pro-only lock screen ──────────────────────────────────────────
+function SearchLockedScreen() {
+  const router = useRouter()
+
+  const proFeatures = [
+    { icon: Sparkles, text: "NLP Search — find moments with natural language" },
+    { icon: Crown, text: "Image Search — find people by photo" },
+    { icon: Shield, text: "Behavior Analysis (Fighting, Accident, Wall Climbing)" },
+    { icon: TrendingUp, text: "Person Tracking & Re-appearance Detection" },
+    { icon: Zap, text: "Unlimited video uploads" },
+    { icon: Crown, text: "Custom Advanced Reports" },
+  ]
+
+  return (
+    <div className="min-h-screen bg-background flex items-center justify-center p-6">
+      <div className="max-w-lg w-full text-center space-y-6">
+        {/* Lock icon */}
+        <div className="flex justify-center">
+          <div className="p-5 bg-gradient-to-br from-purple-600/20 to-blue-600/20 border border-purple-500/30 rounded-full">
+            <Lock className="w-10 h-10 text-purple-400" />
+          </div>
+        </div>
+
+        <div>
+          <h1 className="text-2xl font-bold mb-2 text-white">Search is a Pro Feature</h1>
+          <p className="text-muted-foreground max-w-md mx-auto">
+            NLP Search and Image Search require the <span className="text-purple-400 font-semibold">DetectifAI Pro</span> plan.
+            Upgrade to search through your surveillance footage using natural language or photos.
+          </p>
+        </div>
+
+        {/* Pro features */}
+        <div className="bg-card border border-border rounded-xl p-5 text-left space-y-3">
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Everything in Pro:</p>
+          {proFeatures.map(({ icon: Icon, text }, i) => (
+            <div key={i} className="flex items-center gap-3 text-sm">
+              <Icon className="w-4 h-4 text-purple-500 flex-shrink-0" />
+              <span>{text}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* CTAs */}
+        <div className="flex gap-3 justify-center">
+          <Button variant="outline" onClick={() => router.push("/dashboard")}>
+            <ArrowLeft className="w-4 h-4 mr-2" />
+            Back to Dashboard
+          </Button>
+          <Button
+            className="bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white border-0"
+            onClick={() => router.push("/pricing")}
+          >
+            <Crown className="w-4 h-4 mr-2" />
+            Upgrade to Pro
+          </Button>
+        </div>
+
+        <p className="text-xs text-muted-foreground">Starting at $49/mo · Cancel anytime</p>
+      </div>
+    </div>
+  )
+}
+
+function SearchPageInner() {
   const { user, isLoading, logout } = useAuth()
+  const { isGateUnlocked, loading: subLoading } = useSubscription()
   const router = useRouter()
   const [searchQuery, setSearchQuery] = useState("")
   const [searchResults, setSearchResults] = useState<any[]>([])
@@ -57,6 +131,13 @@ export default function SearchPage() {
 
       const data = await response.json()
       
+      // Check if results exist and format them
+      if (!data.results || data.results.length === 0) {
+        setSearchResults([])
+        setIsSearching(false)
+        return
+      }
+      
       // Format results for the SearchResults component
       const formattedResults = data.results.map((result: any, index: number) => {
         // Build thumbnail URL from video_reference if thumbnail is not provided
@@ -67,15 +148,20 @@ export default function SearchPage() {
         
         return {
           id: result.id || result.description_id || index + 1,
-          timestamp: result.timestamp 
-            ? new Date(result.timestamp).toLocaleTimeString() 
-            : 'N/A',
+          timestamp: result.start_timestamp_ms 
+            ? new Date(result.start_timestamp_ms).toLocaleTimeString() 
+            : result.timestamp 
+              ? (typeof result.timestamp === 'number' ? new Date(result.timestamp).toLocaleTimeString() : result.timestamp)
+              : 'N/A',
           description: result.description || result.caption || '',
           zone: result.zone || 'N/A',
           thumbnail: thumbnail || null,  // Don't use placeholder, handle null in component
           confidence: result.confidence || result.similarity_score || 0.0,
-          similarity_score: result.similarity_score,
+          similarity_score: result.similarity_score || result.similarity || 0.0,
           event_id: result.event_id,
+          video_id: result.video_id,
+          start_timestamp_ms: result.start_timestamp_ms,
+          end_timestamp_ms: result.end_timestamp_ms,
           video_reference: result.video_reference
         }
       })
@@ -95,7 +181,7 @@ export default function SearchPage() {
     setSearchQuery(`Image search - ${results.length} matches found`)
   }
 
-  if (isLoading) {
+  if (isLoading || subLoading) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="text-center">
@@ -108,6 +194,11 @@ export default function SearchPage() {
 
   if (!user) {
     return null
+  }
+
+  // ── Subscription gate: NLP Search requires Pro ──────────────────────────
+  if (!isGateUnlocked("nlp_search")) {
+    return <SearchLockedScreen />
   }
 
   return (
@@ -153,7 +244,21 @@ export default function SearchPage() {
             isSearching={isSearching}
           />
 
-          {searchResults.length > 0 && <SearchResults results={searchResults} query={searchQuery} />}
+          {/* Show results or no results message */}
+          {searchQuery && !isSearching && (
+            <>
+              {searchResults.length > 0 ? (
+                <SearchResults results={searchResults} query={searchQuery} />
+              ) : (
+                <div className="text-center py-12">
+                  <div className="text-muted-foreground text-lg mb-2">No results found</div>
+                  <div className="text-sm text-muted-foreground">
+                    No matches found for "{searchQuery}". Try adjusting your search terms or using different keywords.
+                  </div>
+                </div>
+              )}
+            </>
+          )}
 
           <UploadImageModal 
             isOpen={showUploadModal} 

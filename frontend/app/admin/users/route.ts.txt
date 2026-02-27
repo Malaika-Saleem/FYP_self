@@ -1,0 +1,168 @@
+import { NextRequest, NextResponse } from "next/server"
+import { getServerSession } from "next-auth"
+import { authOptions } from "@/lib/auth-config"
+import { getDb } from "@/lib/auth"
+import bcrypt from "bcryptjs"
+
+// Helper to check admin role
+async function checkAdmin(request: NextRequest) {
+  try {
+    const session = await getServerSession(authOptions)
+    if (!session || (session.user as any)?.role !== "admin") {
+      return null
+    }
+    return session
+  } catch (error) {
+    console.error("Error checking admin:", error)
+    return null
+  }
+}
+
+// Handle CORS preflight
+export async function OPTIONS() {
+  return new NextResponse(null, {
+    status: 200,
+    headers: {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    },
+  })
+}
+
+// GET /api/admin/users - Get all users
+export async function GET(request: NextRequest) {
+  try {
+    const admin = await checkAdmin(request)
+    if (!admin) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
+
+    const db = await getDb()
+    const users = db.collection("users")
+
+    // Get query parameters
+    const searchParams = request.nextUrl.searchParams
+    const page = parseInt(searchParams.get("page") || "1")
+    const limit = parseInt(searchParams.get("limit") || "50")
+    const search = searchParams.get("search") || ""
+    const roleFilter = searchParams.get("role") || ""
+    const statusFilter = searchParams.get("status") || ""
+
+    // Build query
+    const query: any = {}
+    if (search) {
+      query.$or = [
+        { email: { $regex: search, $options: "i" } },
+        { username: { $regex: search, $options: "i" } },
+        { name: { $regex: search, $options: "i" } },
+      ]
+    }
+    if (roleFilter) {
+      query.role = roleFilter
+    }
+    if (statusFilter) {
+      if (statusFilter === "active") {
+        query.is_active = true
+      } else if (statusFilter === "inactive") {
+        query.is_active = false
+      }
+    }
+
+    // Get total count
+    const total = await users.countDocuments(query)
+
+    // Get users with pagination
+    const skip = (page - 1) * limit
+    const userList = await users
+      .find(query)
+      .sort({ created_at: -1 })
+      .skip(skip)
+      .limit(limit)
+      .toArray()
+
+    // Remove sensitive data
+    const sanitizedUsers = userList.map((u: any) => {
+      const { _id, password, password_hash, ...user } = u
+      return {
+        ...user,
+        _id: _id.toString(),
+      }
+    })
+
+    return NextResponse.json({
+      users: sanitizedUsers,
+      total,
+      page,
+      limit,
+      pages: Math.ceil(total / limit),
+    })
+  } catch (error: any) {
+    console.error("Error fetching users:", error)
+    return NextResponse.json({ error: "Failed to fetch users" }, { status: 500 })
+  }
+}
+
+// POST /api/admin/users - Create a new user
+export async function POST(request: NextRequest) {
+  try {
+    const admin = await checkAdmin(request)
+    if (!admin) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
+
+    const data = await request.json()
+    const { email, password, username, name, role } = data
+
+    if (!email || !password) {
+      return NextResponse.json({ error: "email and password required" }, { status: 400 })
+    }
+
+    const db = await getDb()
+    const users = db.collection("users")
+
+    // Check if user already exists
+    const existing = await users.findOne({ email })
+    if (existing) {
+      return NextResponse.json({ error: "User with this email already exists" }, { status: 400 })
+    }
+
+    // Hash password
+    const password_hash = await bcrypt.hash(password, 10)
+
+    // Create user document
+    const userDoc = {
+      user_id: crypto.randomUUID(),
+      username: username || name || email.split("@")[0],
+      name: name || username || email.split("@")[0],
+      email,
+      password_hash,
+      role: role || "user",
+      is_active: true,
+      profile_data: {},
+      created_at: new Date(),
+      updated_at: new Date(),
+      last_login: null,
+    }
+
+    await users.insertOne(userDoc)
+
+    // Remove sensitive data before returning
+    const { _id, password_hash: _, ...user } = userDoc
+
+    return NextResponse.json(
+      {
+        message: "User created successfully",
+        user: {
+          ...user,
+          _id: _id.toString(),
+        },
+      },
+      { status: 201 }
+    )
+  } catch (error: any) {
+    console.error("Error creating user:", error)
+    return NextResponse.json({ error: "Failed to create user" }, { status: 500 })
+  }
+}
+

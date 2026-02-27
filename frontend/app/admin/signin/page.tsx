@@ -22,9 +22,9 @@ export default function AdminSignIn() {
     e.preventDefault()
     setError("")
 
-    const success = await login(email, password, "admin")
+    const success = await login(email, password)
     if (success) {
-      router.push("/dashboard")
+      router.push("/admin/dashboard")
     } else {
       setError("Invalid admin credentials")
     }

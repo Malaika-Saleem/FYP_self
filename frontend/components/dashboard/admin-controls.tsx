@@ -1,8 +1,13 @@
+"use client"
+
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Settings, Users, Database, Shield } from "lucide-react"
+import { useRouter } from "next/navigation"
 
 export function AdminControls() {
+  const router = useRouter()
+
   return (
     <Card className="bg-card/50 border-border/50">
       <CardHeader>
@@ -21,7 +26,12 @@ export function AdminControls() {
               <span className="font-medium">User Management</span>
             </div>
             <div className="text-sm text-muted-foreground mb-2">Manage user accounts and permissions</div>
-            <Button variant="outline" size="sm" className="w-full bg-transparent">
+            <Button 
+              variant="outline" 
+              size="sm" 
+              className="w-full bg-transparent"
+              onClick={() => router.push("/admin/users")}
+            >
               Manage Users
             </Button>
           </div>
@@ -33,7 +43,12 @@ export function AdminControls() {
               <span className="font-medium">System Settings</span>
             </div>
             <div className="text-sm text-muted-foreground mb-2">Configure surveillance parameters</div>
-            <Button variant="outline" size="sm" className="w-full bg-transparent">
+            <Button 
+              variant="outline" 
+              size="sm" 
+              className="w-full bg-transparent"
+              onClick={() => router.push("/admin/settings")}
+            >
               Settings
             </Button>
           </div>
@@ -45,7 +60,12 @@ export function AdminControls() {
               <span className="font-medium">Database</span>
             </div>
             <div className="text-sm text-muted-foreground mb-2">Backup and maintenance tools</div>
-            <Button variant="outline" size="sm" className="w-full bg-transparent">
+            <Button 
+              variant="outline" 
+              size="sm" 
+              className="w-full bg-transparent"
+              onClick={() => router.push("/admin/database")}
+            >
               Database Tools
             </Button>
           </div>

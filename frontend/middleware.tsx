@@ -19,7 +19,7 @@ export default withAuth(
         const { pathname } = req.nextUrl
         
         // Allow access to auth pages
-        if (pathname === "/signin" || pathname === "/signup") {
+        if (pathname === "/signin" || pathname === "/signup" || pathname === "/admin/signin") {
           return true
         }
 

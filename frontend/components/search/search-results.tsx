@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -31,6 +32,7 @@ interface SearchResultsProps {
 }
 
 export function SearchResults({ results, query }: SearchResultsProps) {
+  const router = useRouter()
   const [selectedClip, setSelectedClip] = useState<SearchResult | null>(null)
   const [isLoadingClip, setIsLoadingClip] = useState(false)
   const [videoErrors, setVideoErrors] = useState<Record<string, boolean>>({})
@@ -42,10 +44,11 @@ export function SearchResults({ results, query }: SearchResultsProps) {
   }
   
   const handleViewClip = (result: SearchResult) => {
-    if (result.event_id && result.clip_available) {
+    if (result.event_id || result.video_id) {
+      // Open video player modal — works for both event clips and full videos
       setSelectedClip(result)
     } else {
-      alert("Clip not available for this result. The event may not have been processed yet.")
+      alert("No video linked to this search result.")
     }
   }
   
@@ -101,55 +104,21 @@ export function SearchResults({ results, query }: SearchResultsProps) {
         {results.map((result) => (
           <Card key={result.id} className="border-border hover:shadow-lg transition-shadow">
             <CardHeader className="pb-3">
-              <div className="aspect-video relative rounded-lg overflow-hidden bg-muted">
-                {result.annotated_clip_available && result.annotated_clip_url && !videoErrors[result.id] ? (
-                  <>
-                    <video
-                      src={result.annotated_clip_url}
-                      className="w-full h-full object-cover"
-                      controls
-                      muted
-                      playsInline
-                      preload="metadata"
-                      onError={(e) => {
-                        console.error('Video load error for annotated clip:', e)
-                        const videoEl = e.target as HTMLVideoElement
-                        console.error('Video error details:', {
-                          error: videoEl.error,
-                          src: videoEl.src,
-                          networkState: videoEl.networkState,
-                          readyState: videoEl.readyState
-                        })
-                        // Mark this video as having an error, fallback to thumbnail
-                        setVideoErrors(prev => ({ ...prev, [result.id]: true }))
-                      }}
-                      onLoadedMetadata={() => {
-                        console.log('✅ Annotated clip metadata loaded for result:', result.id)
-                      }}
-                      onLoadStart={() => {
-                        console.log('🔄 Loading annotated clip:', result.annotated_clip_url)
-                      }}
-                    >
-                      Your browser does not support the video tag.
-                    </video>
-                    <div className="absolute top-2 right-2 bg-green-500/80 text-white text-xs px-2 py-1 rounded z-10">
-                      Annotated
-                    </div>
-                  </>
-                ) : result.thumbnail ? (
+              {/* Use square aspect for face images, 16:9 for video thumbnails */}
+              <div className={`relative rounded-lg overflow-hidden bg-muted ${
+                result.thumbnail?.includes('/api/face-image/') ? 'aspect-square' : 'aspect-video'
+              }`}>
+                {/* Always show thumbnail for face search results, not annotated clip preview */}
+                {result.thumbnail ? (
                   <>
                     <img
-                      src={
-                        result.thumbnail.startsWith('http') 
-                          ? result.thumbnail 
-                          : result.thumbnail.startsWith('/api/')
-                            ? result.thumbnail
-                            : result.video_reference?.object_name && result.video_reference?.bucket
-                              ? `/api/minio/image/${result.video_reference.bucket}/${result.video_reference.object_name}`
-                              : result.thumbnail
-                      }
+                      src={result.thumbnail}
                       alt={result.description}
-                      className="w-full h-full object-cover"
+                      className={`w-full h-full ${
+                        result.thumbnail?.includes('/api/face-image/')
+                          ? 'object-contain bg-gradient-to-br from-gray-900 to-gray-800'
+                          : 'object-cover'
+                      }`}
                       onError={(e) => {
                         // Use data URI placeholder instead of trying to load a file
                         const img = e.target as HTMLImageElement
@@ -158,9 +127,18 @@ export function SearchResults({ results, query }: SearchResultsProps) {
                         }
                       }}
                     />
-                    <div className="absolute inset-0 bg-black/20 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity">
-                      <Play className="h-8 w-8 text-white" />
-                    </div>
+                    {result.annotated_clip_available && (
+                      <div className="absolute top-2 right-2 bg-blue-500/80 text-white text-xs px-2 py-1 rounded z-10">
+                        Clip Available
+                      </div>
+                    )}
+                    {result.clip_available && (
+                      <div className="absolute inset-0 bg-black/20 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity cursor-pointer"
+                        onClick={() => handleViewClip(result)}
+                      >
+                        <Play className="h-8 w-8 text-white drop-shadow-lg" />
+                      </div>
+                    )}
                   </>
                 ) : (
                   <div className="w-full h-full flex items-center justify-center">
@@ -199,10 +177,10 @@ export function SearchResults({ results, query }: SearchResultsProps) {
                   size="sm" 
                   className="flex-1"
                   onClick={() => handleViewClip(result)}
-                  disabled={!result.clip_available || !result.event_id}
+                  disabled={!result.event_id && !result.video_id}
                 >
                   <Eye className="mr-2 h-4 w-4" />
-                  View Clip
+                  {result.event_id ? 'View Clip' : result.video_id ? 'View Video' : 'No Video'}
                 </Button>
                 <Button 
                   variant="outline" 
@@ -226,12 +204,12 @@ export function SearchResults({ results, query }: SearchResultsProps) {
         </Button>
       </div>
       
-      {/* Clip Viewer Dialog */}
+      {/* Video Player Dialog */}
       <Dialog open={!!selectedClip} onOpenChange={() => setSelectedClip(null)}>
         <DialogContent className="max-w-4xl">
           <DialogHeader>
             <DialogTitle className="flex items-center justify-between">
-              <span>Event Clip - {selectedClip?.description}</span>
+              <span>{selectedClip?.description || 'Video'}</span>
               <Button
                 variant="ghost"
                 size="sm"
@@ -241,20 +219,55 @@ export function SearchResults({ results, query }: SearchResultsProps) {
               </Button>
             </DialogTitle>
           </DialogHeader>
-          {selectedClip && selectedClip.event_id && (
-            <div className="relative aspect-video bg-black rounded-lg overflow-hidden">
-              <video
-                src={
-                  selectedClip.annotated_clip_available && selectedClip.annotated_clip_url
-                    ? selectedClip.annotated_clip_url
-                    : `/api/event/clip/${selectedClip.event_id}`
-                }
-                controls
-                className="w-full h-full"
-                autoPlay
-              >
-                Your browser does not support the video tag.
-              </video>
+          {selectedClip && (selectedClip.event_id || selectedClip.video_id) ? (
+            <div className="space-y-3">
+              <div className="relative aspect-video bg-black rounded-lg overflow-hidden">
+                <video
+                  key={selectedClip.event_id || selectedClip.video_id}
+                  src={
+                    selectedClip.event_id
+                      ? `/api/event/clip/${selectedClip.event_id}`
+                      : `/api/video/compressed/${selectedClip.video_id}`
+                  }
+                  controls
+                  className="w-full h-full"
+                  autoPlay
+                  onError={(e) => {
+                    const videoEl = e.target as HTMLVideoElement
+                    setVideoErrors(prev => ({
+                      ...prev,
+                      [selectedClip.event_id || selectedClip.video_id || '']: true
+                    }))
+                  }}
+                >
+                  Your browser does not support the video tag.
+                </video>
+              </div>
+              {videoErrors[selectedClip.event_id || selectedClip.video_id || ''] && (
+                <p className="text-sm text-destructive text-center">
+                  Video could not be loaded. The source file may no longer be available.
+                </p>
+              )}
+              <div className="flex items-center justify-between text-sm text-muted-foreground">
+                <span>Match: {Math.round(selectedClip.confidence * 100)}%</span>
+                {selectedClip.video_id && (
+                  <Button
+                    variant="link"
+                    size="sm"
+                    className="p-0 h-auto"
+                    onClick={() => {
+                      setSelectedClip(null)
+                      router.push(`/results/${selectedClip.video_id}`)
+                    }}
+                  >
+                    View Full Analysis →
+                  </Button>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="p-8 text-center text-muted-foreground">
+              <p>No video available for this result.</p>
             </div>
           )}
         </DialogContent>

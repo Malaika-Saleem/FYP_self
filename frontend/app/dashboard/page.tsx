@@ -4,6 +4,7 @@ import { useAuth } from "@/components/auth-provider"
 import { DashboardHeader } from "@/components/dashboard/dashboard-header"
 import { UserDashboard } from "@/components/dashboard/user-dashboard"
 import { AdminDashboard } from "@/components/dashboard/admin-dashboard"
+import { SubscriptionProvider } from "@/contexts/subscription-context"
 import { useRouter } from "next/navigation"
 import { useEffect } from "react"
 
@@ -33,17 +34,19 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="min-h-screen bg-background">
-      <main className="p-6">
-        <div className="max-w-7xl mx-auto space-y-6">
-          <DashboardHeader user={user} />
-          {user.role === "admin" ? (
-            <AdminDashboard />
-          ) : (
-            <UserDashboard userRole={user.role} />
-          )}
-        </div>
-      </main>
-    </div>
+    <SubscriptionProvider>
+      <div className="min-h-screen bg-background">
+        <main className="p-6">
+          <div className="max-w-7xl mx-auto space-y-6">
+            <DashboardHeader user={user} />
+            {user.role === "admin" ? (
+              <AdminDashboard />
+            ) : (
+              <UserDashboard userRole={user.role} />
+            )}
+          </div>
+        </main>
+      </div>
+    </SubscriptionProvider>
   )
 }

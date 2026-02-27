@@ -1,0 +1,167 @@
+import { NextRequest, NextResponse } from "next/server"
+import { getServerSession } from "next-auth"
+import { authOptions } from "@/lib/auth-config"
+import { getDb } from "@/lib/auth"
+import bcrypt from "bcryptjs"
+
+// Helper to check admin role
+async function checkAdmin(request: NextRequest) {
+  try {
+    const session = await getServerSession(authOptions)
+    if (!session || (session.user as any)?.role !== "admin") {
+      return null
+    }
+    return session
+  } catch (error) {
+    console.error("Error checking admin:", error)
+    return null
+  }
+}
+
+// Handle CORS preflight
+export async function OPTIONS() {
+  return new NextResponse(null, {
+    status: 200,
+    headers: {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, PUT, DELETE, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    },
+  })
+}
+
+// GET /api/admin/users/[userId] - Get a specific user
+export async function GET(request: NextRequest, { params }: { params: { userId: string } }) {
+  try {
+    const admin = await checkAdmin(request)
+    if (!admin) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
+
+    const db = await getDb()
+    const users = db.collection("users")
+
+    const userDoc = await users.findOne({ user_id: params.userId })
+    if (!userDoc) {
+      return NextResponse.json({ error: "User not found" }, { status: 404 })
+    }
+
+    // Remove sensitive data
+    const { _id, password, password_hash, ...user } = userDoc
+
+    return NextResponse.json({
+      user: {
+        ...user,
+        _id: _id.toString(),
+      },
+    })
+  } catch (error: any) {
+    console.error("Error fetching user:", error)
+    return NextResponse.json({ error: "Failed to fetch user" }, { status: 500 })
+  }
+}
+
+// PUT /api/admin/users/[userId] - Update a user
+export async function PUT(request: NextRequest, { params }: { params: { userId: string } }) {
+  try {
+    const admin = await checkAdmin(request)
+    if (!admin) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
+
+    const data = await request.json()
+    const db = await getDb()
+    const users = db.collection("users")
+
+    const userDoc = await users.findOne({ user_id: params.userId })
+    if (!userDoc) {
+      return NextResponse.json({ error: "User not found" }, { status: 404 })
+    }
+
+    // Build update data
+    const updateData: any = {}
+    if (data.username !== undefined || data.name !== undefined) {
+      updateData.username = data.username || data.name
+      updateData.name = data.name || data.username
+    }
+    if (data.email !== undefined) {
+      // Check if new email already exists
+      const existing = await users.findOne({
+        email: data.email,
+        user_id: { $ne: params.userId },
+      })
+      if (existing) {
+        return NextResponse.json({ error: "Email already in use" }, { status: 400 })
+      }
+      updateData.email = data.email
+    }
+    if (data.role !== undefined) {
+      updateData.role = data.role
+    }
+    if (data.is_active !== undefined) {
+      updateData.is_active = data.is_active
+    }
+    if (data.password !== undefined && data.password) {
+      updateData.password_hash = await bcrypt.hash(data.password, 10)
+    }
+
+    if (Object.keys(updateData).length === 0) {
+      return NextResponse.json({ error: "No valid fields to update" }, { status: 400 })
+    }
+
+    updateData.updated_at = new Date()
+
+    await users.updateOne({ user_id: params.userId }, { $set: updateData })
+
+    // Fetch updated user
+    const updatedUser = await users.findOne({ user_id: params.userId })
+    if (!updatedUser) {
+      return NextResponse.json({ error: "User not found after update" }, { status: 404 })
+    }
+
+    // Remove sensitive data
+    const { _id, password, password_hash, ...user } = updatedUser
+
+    return NextResponse.json({
+      message: "User updated successfully",
+      user: {
+        ...user,
+        _id: _id.toString(),
+      },
+    })
+  } catch (error: any) {
+    console.error("Error updating user:", error)
+    return NextResponse.json({ error: "Failed to update user" }, { status: 500 })
+  }
+}
+
+// DELETE /api/admin/users/[userId] - Delete a user
+export async function DELETE(request: NextRequest, { params }: { params: { userId: string } }) {
+  try {
+    const admin = await checkAdmin(request)
+    if (!admin) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
+
+    const db = await getDb()
+    const users = db.collection("users")
+
+    const userDoc = await users.findOne({ user_id: params.userId })
+    if (!userDoc) {
+      return NextResponse.json({ error: "User not found" }, { status: 404 })
+    }
+
+    // Prevent deleting yourself
+    const currentUserId = (admin.user as any)?.id || (admin.user as any)?.email
+    if (userDoc.user_id === currentUserId || userDoc.email === (admin.user as any)?.email) {
+      return NextResponse.json({ error: "Cannot delete your own account" }, { status: 400 })
+    }
+
+    await users.deleteOne({ user_id: params.userId })
+
+    return NextResponse.json({ message: "User deleted successfully" })
+  } catch (error: any) {
+    console.error("Error deleting user:", error)
+    return NextResponse.json({ error: "Failed to delete user" }, { status: 500 })
+  }
+}

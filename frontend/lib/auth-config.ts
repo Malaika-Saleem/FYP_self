@@ -80,16 +80,53 @@ export const authOptions: NextAuthOptions = {
       return true
     },
 
-    async jwt({ token, user }) {
+    async jwt({ token, user, account }) {
+      // When user first signs in, get their database user_id
       if (user) {
-        token.role = (user as any).role
+        try {
+          await client.connect()
+          const users = db.collection("users")
+          const dbUser = await users.findOne({ 
+            $or: [
+              { email: user.email },
+              { user_id: (user as any).id } // For credentials login
+            ]
+          })
+          
+          if (dbUser) {
+            // Store database user_id in token (not Google ID)
+            token.userId = dbUser.user_id
+            token.role = dbUser.role || (user as any).role || "user"
+          } else if ((user as any).id) {
+            // Fallback to user.id if database lookup fails (shouldn't happen)
+            token.userId = (user as any).id
+            token.role = (user as any).role || "user"
+          }
+        } catch (error) {
+          console.error("Error in JWT callback:", error)
+          // Fallback to user.id if database lookup fails
+          if ((user as any).id) {
+            token.userId = (user as any).id
+            token.role = (user as any).role || "user"
+          }
+        }
       }
+      // On token refresh, preserve existing userId and role
+      // (user is undefined on refresh, so we keep the existing token values)
       return token
     },
 
     async session({ session, token }) {
-      if (token?.sub) (session.user as any).id = token.sub
-      if (token?.role) (session.user as any).role = token.role
+      // Use userId from token (database user_id) instead of token.sub (which might be Google ID)
+      if (token?.userId) {
+        (session.user as any).id = token.userId
+      } else if (token?.sub) {
+        // Fallback to token.sub if userId not available
+        (session.user as any).id = token.sub
+      }
+      if (token?.role) {
+        (session.user as any).role = token.role
+      }
       return session
     },
   },

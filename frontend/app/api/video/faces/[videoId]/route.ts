@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 
+const FLASK_API_URL = process.env.FLASK_API_URL || 'http://localhost:5000'
+
 export async function GET(
   request: NextRequest,
   { params }: { params: { videoId: string } }
@@ -8,7 +10,7 @@ export async function GET(
     const videoId = params.videoId
     
     // Forward request to Flask backend for detected faces
-    const response = await fetch(`http://localhost:5000/api/v2/video/faces/${videoId}`, {
+    const response = await fetch(`${FLASK_API_URL}/api/v2/video/faces/${videoId}`, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',

@@ -72,7 +72,35 @@ export async function apiRequest<T>(
 }
 
 /**
- * Admin API functions
+ * Make authenticated API request to Next.js API routes
+ */
+async function nextApiRequest<T>(
+  endpoint: string,
+  options: RequestInit = {}
+): Promise<T> {
+  const headers: HeadersInit = {
+    'Content-Type': 'application/json',
+    ...options.headers,
+  }
+
+  const response = await fetch(endpoint, {
+    ...options,
+    headers,
+    credentials: 'include', // Include cookies for NextAuth session
+  })
+
+  if (!response.ok) {
+    const error: ApiError = await response.json().catch(() => ({
+      error: `HTTP ${response.status}: ${response.statusText}`,
+    }))
+    throw new Error(error.error || error.message || 'Request failed')
+  }
+
+  return response.json()
+}
+
+/**
+ * Admin API functions - Now using Next.js API routes
  */
 export const adminApi = {
   /**
@@ -99,14 +127,14 @@ export const adminApi = {
     if (params?.status) queryParams.set('status', params.status)
 
     const query = queryParams.toString()
-    return apiRequest(`/api/admin/users${query ? `?${query}` : ''}`)
+    return nextApiRequest(`/api/admin/users${query ? `?${query}` : ''}`)
   },
 
   /**
    * Get a single user by ID
    */
   async getUser(userId: string): Promise<{ user: any }> {
-    return apiRequest(`/api/admin/users/${userId}`)
+    return nextApiRequest(`/api/admin/users/${userId}`)
   },
 
   /**
@@ -119,7 +147,7 @@ export const adminApi = {
     name?: string
     role?: string
   }): Promise<{ message: string; user: any }> {
-    return apiRequest('/api/admin/users', {
+    return nextApiRequest('/api/admin/users', {
       method: 'POST',
       body: JSON.stringify(userData),
     })
@@ -139,7 +167,7 @@ export const adminApi = {
       password?: string
     }
   ): Promise<{ message: string; user: any }> {
-    return apiRequest(`/api/admin/users/${userId}`, {
+    return nextApiRequest(`/api/admin/users/${userId}`, {
       method: 'PUT',
       body: JSON.stringify(userData),
     })
@@ -149,7 +177,7 @@ export const adminApi = {
    * Delete a user
    */
   async deleteUser(userId: string): Promise<{ message: string }> {
-    return apiRequest(`/api/admin/users/${userId}`, {
+    return nextApiRequest(`/api/admin/users/${userId}`, {
       method: 'DELETE',
     })
   },

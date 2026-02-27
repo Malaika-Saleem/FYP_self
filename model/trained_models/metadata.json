@@ -1,5 +1,5 @@
 {
-  "accuracy": 0.9923339011925043,
+  "accuracy": 0.9934621944286527,
   "classifier": "svm",
   "classes": 30,
   "people": [
@@ -34,5 +34,7 @@
     "n000438",
     "n000472"
   ],
-  "trained": "2025-11-13T11:25:50.254327"
+  "distance_threshold": 0.9,
+  "rejection_enabled": true,
+  "trained": "2025-12-08T12:49:12.342760"
 }

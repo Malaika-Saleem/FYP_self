@@ -3,9 +3,11 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Check, Star } from "lucide-react"
+import { Check, Star, Loader2 } from "lucide-react"
 import { useAuth } from "@/components/auth-provider"
 import Link from "next/link"
+import { useState } from "react"
+import { useToast } from "@/components/ui/use-toast"
 
 interface PricingCardsProps {
   billingPeriod: "monthly" | "annual"
@@ -13,41 +15,48 @@ interface PricingCardsProps {
 
 export function PricingCards({ billingPeriod }: PricingCardsProps) {
   const { user } = useAuth()
+  const { toast } = useToast()
+  const [loading, setLoading] = useState<string | null>(null)
 
   const plans = [
     {
       name: "DetectifAI Basic",
-      description: "Perfect for small security teams getting started",
+      description: "Essential AI-powered security monitoring for single installations",
       monthlyPrice: 19,
-      annualPrice: 11,
+      annualPrice: 11.40,
       popular: false,
+      planId: "basic",
       features: [
-        "Basic CCTV integration",
-        "Dashboard access",
+        "Single video feed processing",
+        "AI-powered object detection (fire, weapons)",
+        "Facial recognition on suspicious frames",
         "7-day event history",
-        "Email alerts",
-        "Up to 5 cameras",
-        "Standard support",
+        "Dashboard access",
+        "Basic video reports",
+        "Video clip generation",
       ],
-      limitations: ["Limited search queries (50/month)", "Basic reporting"],
+      limitations: [
+        "Single camera/video source only",
+        "7-day event retention",
+        "Standard processing queue"
+      ],
     },
     {
       name: "DetectifAI Pro",
-      description: "Advanced features for professional security operations",
+      description: "Advanced security intelligence with extended capabilities",
       monthlyPrice: 49,
-      annualPrice: 29,
+      annualPrice: 29.40,
       popular: true,
+      planId: "pro",
       features: [
         "Everything in Basic",
-        "Unlimited camera feeds",
-        "Real-time AI search",
-        "Advanced behavioral detection",
-        "Custom report generation",
         "30-day event history",
-        "SMS & webhook alerts",
-        "Priority support",
-        "API access",
-        "Custom integrations",
+        "Advanced behavior analysis",
+        "Person re-occurrence tracking",
+        "Natural language event search",
+        "Image-based face search",
+        "Custom report generation",
+        "Priority processing queue",
       ],
       limitations: [],
     },
@@ -64,6 +73,55 @@ export function PricingCards({ billingPeriod }: PricingCardsProps) {
       return monthlyCost - annualCost
     }
     return 0
+  }
+
+  const handleCheckout = async (planId: string) => {
+    if (!user) {
+      toast({
+        title: "Authentication Required",
+        description: "Please sign in to subscribe to a plan.",
+        variant: "destructive"
+      })
+      return
+    }
+
+    setLoading(planId)
+
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000'
+      const response = await fetch(`${apiUrl}/api/subscriptions/create-checkout-session`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          user_id: user.id,
+          user_email: user.email,
+          plan_name: planId,
+          billing_period: billingPeriod === "monthly" ? "monthly" : "yearly"
+        }),
+      })
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to create checkout session')
+      }
+
+      // Redirect to Stripe Checkout
+      if (data.url) {
+        window.location.href = data.url
+      }
+    } catch (error) {
+      console.error('Checkout error:', error)
+      toast({
+        title: "Checkout Error",
+        description: error instanceof Error ? error.message : "Failed to start checkout process",
+        variant: "destructive"
+      })
+    } finally {
+      setLoading(null)
+    }
   }
 
   return (
@@ -121,23 +179,32 @@ export function PricingCards({ billingPeriod }: PricingCardsProps) {
             <div className="space-y-3 pt-4">
               {user ? (
                 <>
-                  <Button className="w-full" variant={plan.popular ? "default" : "outline"}>
-                    {plan.popular ? "Upgrade to Pro" : "Switch to Basic"}
-                  </Button>
-                  <Button variant="outline" className="w-full bg-transparent">
-                    Edit Plan
+                  <Button 
+                    className="w-full" 
+                    variant={plan.popular ? "default" : "outline"}
+                    onClick={() => handleCheckout(plan.planId)}
+                    disabled={loading === plan.planId}
+                  >
+                    {loading === plan.planId ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Loading...
+                      </>
+                    ) : (
+                      `Get ${plan.name.split(' ')[1]}`
+                    )}
                   </Button>
                 </>
               ) : (
                 <>
-                  <Link href="/signup">
+                  <Link href="/signin">
                     <Button className="w-full" variant={plan.popular ? "default" : "outline"}>
                       Get Started
                     </Button>
                   </Link>
-                  <Button variant="outline" className="w-full bg-transparent">
-                    Try for free (7 days)
-                  </Button>
+                  <p className="text-xs text-center text-muted-foreground">
+                    Sign in to subscribe
+                  </p>
                 </>
               )}
             </div>

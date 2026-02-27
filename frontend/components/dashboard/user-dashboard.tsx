@@ -6,6 +6,14 @@ import { Search, Upload, Play, Pause, SkipBack, SkipForward, Volume2, FileText, 
 import { Input } from "@/components/ui/input"
 import { useRouter } from "next/navigation"
 import { useState, useRef, useEffect } from "react"
+import { useSession } from "next-auth/react"
+import { ReportWidget } from "./widgets/report-widget"
+import { useAlerts } from "@/lib/useAlerts"
+import { AlertPopup } from "./alert-popup"
+import { LiveAlertsPanel } from "./live-alerts-panel"
+import { useSubscription } from "@/contexts/subscription-context"
+import { FeatureGateOverlay, UsageTooltip, UploadLimitIndicator, PlanBadgeCompact, UpgradeDialog } from "./feature-gate-overlay"
+import { DASHBOARD_GATES } from "@/contexts/subscription-context"
 
 interface UserDashboardProps {
   userRole: "user" | "admin"
@@ -60,6 +68,8 @@ interface Keyframe {
   detection_count?: number
   objects?: string[]
   confidence_avg?: number
+  api_url?: string
+  minio_url?: string
 }
 
 interface DetectedFace {
@@ -73,6 +83,7 @@ interface DetectedFace {
 
 export function UserDashboard({ userRole }: UserDashboardProps) {
   const router = useRouter()
+  const { data: session } = useSession()
   const [showUploadModal, setShowUploadModal] = useState(false)
   const [showReportModal, setShowReportModal] = useState(false)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
@@ -100,13 +111,58 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
   const liveStatsIntervalRef = useRef<NodeJS.Timeout | null>(null)
 
+  // Real-time alerts hook — connects to SSE stream
+  const {
+    alerts: liveAlerts,
+    pendingAlerts,
+    currentPopupAlert,
+    isConnected: isAlertStreamConnected,
+    connectionError: alertConnectionError,
+    stats: alertStats,
+    confirmAlert,
+    dismissAlert,
+    connect: connectAlertStream,
+    dismissPopup,
+    sendTestAlert,
+  } = useAlerts({ autoConnect: true, enableSound: true })
+
+  // Subscription & plan context
+  const {
+    planId,
+    planName,
+    hasSubscription,
+    hasFeature,
+    isGateUnlocked,
+    getUsage,
+    loading: subscriptionLoading,
+    refreshSubscription,
+  } = useSubscription()
+
+  // Upgrade prompt state — shown when user tries a gated action (upload / live)
+  const [showUpgradePrompt, setShowUpgradePrompt] = useState(false)
+  const [upgradeGateId, setUpgradeGateId] = useState<string>("video_upload")
+
   const handleSearchClick = () => {
+    // NLP/Image search is Pro-only — if not unlocked, show upgrade prompt
+    if (!isGateUnlocked("nlp_search")) {
+      setUpgradeGateId("nlp_search")
+      setShowUpgradePrompt(true)
+      return
+    }
     router.push("/search")
   }
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (file) {
+      // Check upload limits before proceeding (Pro users have unlimited)
+      const videoUsage = getUsage("video_processing")
+      const isUnlimited = planId === "detectifai_pro" && videoUsage && videoUsage.limit >= 999999
+      if (!isUnlimited && videoUsage && videoUsage.remaining <= 0) {
+        alert(`You've reached your upload limit (${videoUsage.limit} videos/month). Please upgrade your plan for more uploads.`)
+        return
+      }
+
       // Clear all previous video data when selecting a new file
       console.log('🧹 Clearing previous video data for new upload')
       setKeyframes([])
@@ -120,7 +176,7 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
         mostCommonIncident: "None",
         mostActiveZone: "N/A"
       })
-      
+
       setSelectedFile(file)
       setUploadStatus("")
       setShowUploadModal(true)
@@ -128,10 +184,23 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
   }
 
   const handleUpload = () => {
+    // Guard: must have subscription with video upload access
+    if (!isGateUnlocked("video_upload")) {
+      setUpgradeGateId("video_upload")
+      setShowUpgradePrompt(true)
+      return
+    }
     fileInputRef.current?.click()
   }
 
   const handleStartLiveStream = async () => {
+    // Guard: must have subscription for live stream
+    if (!isGateUnlocked("live_stream")) {
+      setUpgradeGateId("live_stream")
+      setShowUpgradePrompt(true)
+      return
+    }
+
     try {
       const response = await fetch('/api/live/start', {
         method: 'POST',
@@ -149,11 +218,11 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
         const flaskUrl = process.env.NEXT_PUBLIC_FLASK_API_URL || 'http://localhost:5000'
         const feedUrl = `${flaskUrl}/api/live/feed/webcam_01?t=${Date.now()}`
         console.log('🎥 Live stream started, feed URL:', feedUrl)
-        
+
         // Set the URL state - useEffect will handle setting it on the image element
         setLiveStreamUrl(feedUrl)
         setIsLiveStreamActive(true)
-        
+
         // Start polling for stats
         if (liveStatsIntervalRef.current) {
           clearInterval(liveStatsIntervalRef.current)
@@ -208,14 +277,14 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
     if (isLiveStreamActive && liveStreamUrl && liveVideoRef.current) {
       console.log('🎥 useEffect: Setting live stream src to:', liveStreamUrl)
       liveVideoRef.current.src = liveStreamUrl
-      
+
       // Add error handler
       liveVideoRef.current.onerror = (e) => {
         console.error('❌ Live stream image error:', e)
         console.error('❌ Image src:', liveVideoRef.current?.src)
         console.error('❌ Image currentSrc:', liveVideoRef.current?.currentSrc)
       }
-      
+
       // Add load handler
       liveVideoRef.current.onload = () => {
         console.log('✅ Live stream image loaded successfully')
@@ -238,7 +307,7 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
   const fetchVideoResults = async (videoId: string) => {
     try {
       console.log('🔄 Fetching video results for:', videoId)
-      
+
       // Clear old data if this is a different video than what's currently displayed
       if (currentVideoId && currentVideoId !== videoId) {
         console.log('🧹 Clearing data for different video:', currentVideoId, '->', videoId)
@@ -247,13 +316,12 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
         setVideoResults(null)
         setCompressedVideoUrl(null)
       }
-      
-      // Set annotated video URL first (with bounding boxes), fallback to compressed
-      console.log('✅ Setting annotated video URL')
-      setAnnotatedVideoUrl(`/api/video/annotated/${videoId}`)
-      // Also set compressed as fallback
+
+      // Clear video URLs initially to prevent stale state
+      setAnnotatedVideoUrl(null)
+      // Set compressed video URL tentatively, will be updated/confirmed by status
       setCompressedVideoUrl(`/api/video/compressed/${videoId}`)
-      
+
       // Step 1: Fetch video status (includes metadata)
       console.log('📊 Fetching status data...')
       const statusResponse = await fetch(`/api/video/status/${videoId}`)
@@ -263,7 +331,7 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
         console.error('❌ Status error details:', errorText)
         return
       }
-      
+
       const statusData = await statusResponse.json()
       console.log('📊 Status data received:', JSON.stringify(statusData, null, 2))
 
@@ -286,13 +354,13 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
       // Step 2: Try to fetch comprehensive results with proper error handling
       console.log('📋 Fetching comprehensive results...')
       let videoResultsData: VideoResults | null = null
-      
+
       try {
         const resultsResponse = await fetch(`/api/video/results/${videoId}`)
         if (resultsResponse.ok) {
           videoResultsData = await resultsResponse.json() as VideoResults
           console.log('📋 Comprehensive results received:', JSON.stringify(videoResultsData, null, 2))
-          
+
           // Update compressed video URL from results if available
           if (videoResultsData.compressed_video_url) {
             if (videoResultsData.compressed_video_url.startsWith('http')) {
@@ -309,7 +377,7 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
       } catch (resultsErr) {
         console.warn('⚠️ Results fetch error:', resultsErr)
       }
-      
+
       // Create fallback results from status data if comprehensive results unavailable
       if (!videoResultsData) {
         console.log('📋 Creating fallback results from status data')
@@ -323,13 +391,25 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
           detections_count: statusData.detection_count || statusData.meta_data?.detection_count || 0
         }
       }
-      
+
       setVideoResults(videoResultsData)
       updateStatistics(videoResultsData)
 
+      // Update annotated video URL based on results
+      if (videoResultsData?.annotated_video_available) {
+        console.log('✅ Annotated video available, setting URL')
+        setAnnotatedVideoUrl(`/api/video/annotated/${videoId}`)
+      } else if (statusData.meta_data?.annotated_video_available) {
+        console.log('✅ Annotated video available (from status), setting URL')
+        setAnnotatedVideoUrl(`/api/video/annotated/${videoId}`)
+      } else {
+        console.log('ℹ️ No annotated video available')
+        setAnnotatedVideoUrl(null)
+      }
+
       // Step 3: Fetch keyframes with detections (use presigned URLs from status if available)
       let keyframesToSet: Keyframe[] = []
-      
+
       // First try to use keyframes from status if available
       if (statusData.keyframes_urls && Array.isArray(statusData.keyframes_urls)) {
         console.log('✅ Using keyframes from status data:', statusData.keyframes_urls.length)
@@ -343,13 +423,13 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
           has_detections: false // Will be updated from detections
         }))
       }
-      
+
       // Also fetch from keyframes endpoint for detection info
       const keyframesResponse = await fetch(`/api/video/keyframes/${videoId}?filter_detections=true`)
       if (keyframesResponse.ok) {
         const keyframesData = await keyframesResponse.json()
         console.log('🖼️ Keyframes data:', keyframesData)
-        
+
         if (keyframesData.keyframes && keyframesData.keyframes.length > 0) {
           // Merge detection info with keyframes
           const keyframesWithDetections = keyframesData.keyframes.map((kf: any) => ({
@@ -363,7 +443,7 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
             detection_count: kf.detection_count || 0,
             objects: kf.objects || []
           }))
-          
+
           // Use keyframes from endpoint if they have detection info, otherwise use status keyframes
           if (keyframesWithDetections.some((kf: Keyframe) => kf.has_detections)) {
             keyframesToSet = keyframesWithDetections
@@ -372,7 +452,7 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
           }
         }
       }
-      
+
       if (keyframesToSet.length > 0) {
         console.log('✅ Setting keyframes:', keyframesToSet.length)
         setKeyframes(keyframesToSet)
@@ -387,7 +467,7 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
         if (facesResponse.ok) {
           const facesData = await facesResponse.json()
           console.log('👤 Faces data received:', JSON.stringify(facesData, null, 2))
-          
+
           if (facesData.faces && Array.isArray(facesData.faces)) {
             // Process faces to ensure they have proper URLs for display
             const processedFaces = facesData.faces.map((face: DetectedFace) => {
@@ -399,7 +479,7 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
               } else if (face.face_image_path) {
                 faceImageUrl = face.face_image_path
               }
-              
+
               return {
                 ...face,
                 face_image_path: faceImageUrl,
@@ -431,9 +511,9 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
         console.warn('⚠️ Faces fetch error:', facesErr)
         setDetectedFaces([])
       }
-      
+
       console.log('✅ Video results fetch complete!')
-      
+
     } catch (err) {
       console.error('❌ Error fetching video results:', err)
       // Still try to set basic info from status if available
@@ -466,17 +546,19 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
   const updateStatistics = (results: VideoResults) => {
     // Extract detection types from results if available
     let mostCommonIncident = "None"
-    
-    // Prioritize behavior analysis for most common incident
-    if (results.behaviors_summary?.most_common) {
+
+    const behaviorUnlocked = isGateUnlocked("behavior_analysis")
+
+    // Prioritize behavior analysis for most common incident — only if Pro
+    if (behaviorUnlocked && results.behaviors_summary?.most_common) {
       const behaviorLabels: Record<string, string> = {
         'fighting': 'Fighting',
         'road_accident': 'Road Accident',
         'wallclimb': 'Wall Climbing'
       }
-      mostCommonIncident = behaviorLabels[results.behaviors_summary.most_common] || 
-                          results.behaviors_summary.most_common.charAt(0).toUpperCase() + 
-                          results.behaviors_summary.most_common.slice(1).replace('_', ' ')
+      mostCommonIncident = behaviorLabels[results.behaviors_summary.most_common] ||
+        results.behaviors_summary.most_common.charAt(0).toUpperCase() +
+        results.behaviors_summary.most_common.slice(1).replace('_', ' ')
     } else if (results.detections_count > 0) {
       // Try to get detection types from results
       const detectionsSummary = results.detections_summary
@@ -493,10 +575,13 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
         mostCommonIncident = "Security Threat"
       }
     }
-    
+
+    // Only include behavior counts in alerts if Pro
+    const behaviorAlerts = behaviorUnlocked ? (results.behaviors_count || 0) : 0
+
     setStatistics({
       totalIncidents: results.events_count || 0,
-      activeAlerts: (results.detections_count || 0) + (results.behaviors_count || 0),
+      activeAlerts: (results.detections_count || 0) + behaviorAlerts,
       mostCommonIncident: mostCommonIncident,
       mostActiveZone: "Current Video"
     })
@@ -516,7 +601,7 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
       mostCommonIncident: "None",
       mostActiveZone: "N/A"
     })
-    
+
     setUploading(true)
     setProcessing(true)
     setUploadStatus("Uploading video...")
@@ -526,6 +611,10 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
       const formData = new FormData()
       formData.append('video', file)
       formData.append('configType', 'detectifai')
+
+      if (session?.user?.id) {
+        formData.append('user_id', session.user.id)
+      }
 
       const response = await fetch('/api/video/upload', {
         method: 'POST',
@@ -545,7 +634,7 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
       const videoId = data.video_id
       setUploadStatus(`✅ Upload successful! Processing video...`)
       setCurrentVideoId(videoId)
-      
+
       // Immediately set compressed video URL (will be updated when processing completes)
       console.log('🎬 Setting initial compressed video URL for:', videoId)
       setCompressedVideoUrl(`/api/video/compressed/${videoId}`)
@@ -555,7 +644,7 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
         try {
           const statusResponse = await fetch(`/api/video/status/${videoId}`)
           const statusData = await statusResponse.json()
-          
+
           // Debug logging
           console.log('Status check:', {
             status: statusData.status,
@@ -563,15 +652,15 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
             progress: statusData.processing_progress || statusData.meta_data?.processing_progress,
             fullData: statusData
           })
-          
+
           // Update UI with processing status
           const progress = statusData.processing_progress || statusData.meta_data?.processing_progress || statusData.progress || 0
           const message = statusData.processing_message || statusData.meta_data?.processing_message || statusData.message || 'Processing...'
           setUploadStatus(`${message} (${progress}%)`)
-          
+
           // Check for completion - check multiple possible fields
           // More comprehensive completion check
-          const isCompleted = 
+          const isCompleted =
             (statusData.status === 'completed') ||
             (statusData.processing_status === 'completed') ||
             (statusData.meta_data?.processing_status === 'completed') ||
@@ -579,13 +668,13 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
             (statusData.processing_progress === 100 && statusData.status !== 'processing') ||
             (statusData.meta_data?.processing_progress === 100 && statusData.meta_data?.processing_status !== 'processing') ||
             (statusData.meta_data?.progress === 100 && statusData.meta_data?.status !== 'processing')
-          
-          const isFailed = 
-            statusData.status === 'failed' || 
+
+          const isFailed =
+            statusData.status === 'failed' ||
             statusData.processing_status === 'failed' ||
             statusData.meta_data?.processing_status === 'failed' ||
             statusData.meta_data?.status === 'failed'
-          
+
           if (isCompleted) {
             console.log('🎉 Processing completed! Fetching results...')
             if (pollIntervalRef.current) {
@@ -593,11 +682,14 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
               pollIntervalRef.current = null
             }
             setUploadStatus("✅ Processing complete! Fetching results...")
-            
+
             // Clear processing state BEFORE fetching results to remove blur
             setProcessing(false)
             setUploading(false)
-            
+
+            // Refresh subscription usage counters (upload count changed)
+            refreshSubscription().catch(() => {})
+
             // Fetch results
             try {
               await fetchVideoResults(videoId)
@@ -611,13 +703,13 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
                 setCompressedVideoUrl(`/api/video/compressed/${videoId}`)
               }
             }
-            
+
             // Close modal after results are fetched
             setTimeout(() => {
               setShowUploadModal(false)
               setUploadStatus("")
             }, 2000)
-            
+
           } else if (isFailed) {
             console.log('❌ Processing failed')
             if (pollIntervalRef.current) {
@@ -683,9 +775,80 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
         <div className="fixed inset-0 bg-black/30 backdrop-blur-sm z-40 pointer-events-none" />
       )}
 
+      {/* Plan badge + usage summary bar */}
+      {!subscriptionLoading && (
+        <div className="flex items-center justify-between bg-card border rounded-xl px-4 py-2.5">
+          <div className="flex items-center gap-3">
+            <PlanBadgeCompact />
+            {hasSubscription && (
+              <span className="text-xs text-muted-foreground hidden sm:inline">
+                {planName}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-4">
+            {/* Video upload usage inline */}
+            {(() => {
+              const videoUsage = getUsage("video_processing")
+              if (!videoUsage || !hasSubscription) return null
+              
+              // Pro users have unlimited uploads
+              const isUnlimited = planId === "detectifai_pro" && videoUsage.limit >= 999999
+              
+              if (isUnlimited) {
+                return (
+                  <UsageTooltip limitType="video_processing">
+                    <div className="flex items-center gap-2 cursor-help">
+                      <div className="w-16 h-1.5 bg-muted rounded-full overflow-hidden hidden sm:block">
+                        <div className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-cyan-500" style={{ width: "100%" }} />
+                      </div>
+                      <span className="text-xs font-medium text-emerald-500">
+                        ♾️ Unlimited
+                      </span>
+                    </div>
+                  </UsageTooltip>
+                )
+              }
+              
+              const color = videoUsage.remaining <= 0 ? "text-red-500" :
+                videoUsage.percentage > 80 ? "text-amber-500" : "text-emerald-500"
+              return (
+                <UsageTooltip limitType="video_processing">
+                  <div className="flex items-center gap-2 cursor-help">
+                    <div className="w-16 h-1.5 bg-muted rounded-full overflow-hidden hidden sm:block">
+                      <div
+                        className={`h-full rounded-full ${
+                          videoUsage.remaining <= 0 ? "bg-red-500" :
+                          videoUsage.percentage > 80 ? "bg-amber-500" : "bg-emerald-500"
+                        }`}
+                        style={{ width: `${Math.min(100, videoUsage.percentage)}%` }}
+                      />
+                    </div>
+                    <span className={`text-xs font-medium ${color}`}>
+                      {videoUsage.remaining}/{videoUsage.limit} uploads
+                    </span>
+                  </div>
+                </UsageTooltip>
+              )
+            })()}
+            {!hasSubscription && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-xs h-7 border-purple-500/30 text-purple-400 hover:bg-purple-500/10"
+                onClick={() => router.push("/pricing")}
+              >
+                Upgrade Plan
+              </Button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Main Dashboard Grid */}
       <div className={`grid grid-cols-1 lg:grid-cols-2 gap-8 ${processing ? 'blur-sm' : ''}`}>
-        {/* Search By Prompt Widget */}
+        {/* Search By Prompt Widget — Pro only (NLP search + image search) */}
+        <FeatureGateOverlay gateId="nlp_search">
         <Card className="shadow-lg border-3 shadow-gray-500/50 hover:shadow-gray-500/70 transition-shadow duration-300">
           <CardHeader className="pb-4">
             <CardTitle className="flex items-center space-x-2 text-xl">
@@ -719,6 +882,7 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
             </Button>
           </CardContent>
         </Card>
+        </FeatureGateOverlay>
 
         {/* Video Footage Widget */}
         <Card className="shadow-lg border-3 shadow-gray-500/50 hover:shadow-gray-500/70 transition-shadow duration-300">
@@ -728,7 +892,11 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
                 <Play className="h-5 w-5 text-primary" />
                 <span>Video Footage</span>
               </div>
-              <div className="flex gap-2">
+              <div className="flex items-center gap-2">
+                {/* Upload limit indicator — shows "X/Y uploads left" */}
+                <UsageTooltip limitType="video_processing">
+                  <UploadLimitIndicator />
+                </UsageTooltip>
                 <Button
                   variant="outline"
                   size="sm"
@@ -800,7 +968,7 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
                 )}
               </div>
             )}
-            
+
             {/* Video Player */}
             <div className="relative bg-black rounded-lg overflow-hidden border">
               {(annotatedVideoUrl || compressedVideoUrl) ? (
@@ -834,7 +1002,7 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
                       src: videoEl.src,
                       currentSrc: videoEl.currentSrc
                     })
-                    
+
                     // Fallback to compressed video if annotated fails
                     if (annotatedVideoUrl && compressedVideoUrl && videoEl.src.includes('annotated')) {
                       console.log('🔄 Annotated video failed, falling back to compressed...')
@@ -848,7 +1016,7 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
                       console.log('🔄 Media source error, trying to reload...')
                       setTimeout(() => {
                         if (videoEl.src && currentVideoId) {
-                          const newUrl = videoEl.src.includes('annotated') 
+                          const newUrl = videoEl.src.includes('annotated')
                             ? `/api/video/annotated/${currentVideoId}?t=${Date.now()}`
                             : `/api/video/compressed/${currentVideoId}?t=${Date.now()}`
                           console.log('🔄 Attempting reload with:', newUrl)
@@ -910,34 +1078,67 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
                 </div>
               )}
             </div>
+
+            {/* Suspicious Events Timeline — only for Pro (behavior_analysis) */}
+            {isGateUnlocked("behavior_analysis") && (videoResults?.behavior_events && videoResults.behavior_events.length > 0) && (
+              <div className="mt-4 border rounded-lg p-3 bg-muted/30">
+                <h4 className="text-sm font-semibold mb-3 flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-orange-500" />
+                  Suspicious Events Timeline
+                </h4>
+                <div className="space-y-2 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
+                  {videoResults.behavior_events.map((event, index) => {
+                    const formatTime = (ms: number) => {
+                      const seconds = Math.floor(ms / 1000)
+                      const mins = Math.floor(seconds / 60)
+                      const secs = seconds % 60
+                      return `${mins}:${secs.toString().padStart(2, '0')}`
+                    }
+
+                    const handleJumpToTimestamp = (timestampMs: number) => {
+                      if (videoRef.current) {
+                        videoRef.current.currentTime = timestampMs / 1000
+                        videoRef.current.play().catch(e => console.log('Auto-play blocked:', e))
+                      }
+                    }
+
+                    const label = event.event_type.replace('behavior_', '').replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase())
+
+                    return (
+                      <div
+                        key={event.event_id || index}
+                        onClick={() => handleJumpToTimestamp(event.start_timestamp_ms)}
+                        className="flex items-center justify-between p-2 rounded-md bg-background hover:bg-accent cursor-pointer transition-colors border group"
+                      >
+                        <div className="flex items-center gap-2">
+                          <div className={`w-2 h-2 rounded-full ${event.event_type.includes('fighting') ? 'bg-red-500' :
+                            event.event_type.includes('accident') ? 'bg-orange-500' : 'bg-yellow-500'
+                            }`} />
+                          <span className="text-sm font-medium">{label}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-muted-foreground bg-secondary px-2 py-0.5 rounded font-mono">
+                            {formatTime(event.start_timestamp_ms)}
+                          </span>
+                          <Play className="w-3 h-3 text-primary opacity-0 group-hover:opacity-100 transition-opacity" />
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
           </CardContent>
         </Card>
 
-        {/* Generate Report Widget */}
-        <Card className="shadow-lg border-3 shadow-gray-500/50 hover:shadow-gray-500/70 transition-shadow duration-300">
-          <CardHeader className="pb-4">
-            <CardTitle className="flex items-center space-x-2 text-xl">
-              <FileText className="h-5 w-5 text-primary" />
-              <span>Generate Report</span>
-            </CardTitle>
-            <CardDescription>Get comprehensive summaries of suspicious behaviors and alerts</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <p className="text-muted-foreground text-sm leading-relaxed">
-              Generate detailed reports with incident summaries, timelines, and analytics.
-            </p>
-            <Button
-              onClick={handleGenerateReport}
-              className="w-full"
-              size="lg"
-              disabled={!currentVideoId}
-            >
-              Get Report →
-            </Button>
-          </CardContent>
-        </Card>
+        {/* Generate Report Widget - only after video uploaded and analysis complete */}
+        <ReportWidget 
+          videoId={currentVideoId || undefined} 
+          processingComplete={!!currentVideoId && !processing} 
+        />
 
-        {/* Behavior Analysis Widget */}
+        {/* Behavior Analysis Widget — Pro only */}
+        <FeatureGateOverlay gateId="behavior_analysis">
         <Card className="shadow-lg border-3 shadow-gray-500/50 hover:shadow-gray-500/70 transition-shadow duration-300">
           <CardHeader className="pb-4">
             <CardTitle className="flex items-center space-x-2 text-xl">
@@ -948,7 +1149,23 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
-              {videoResults && videoResults.behaviors_available && videoResults.behaviors_count > 0 ? (
+              {/* When locked, show a clean placeholder instead of real data */}
+              {!isGateUnlocked("behavior_analysis") ? (
+                <div className="space-y-3">
+                  <div className="flex items-center space-x-3 p-3 bg-muted/30 border border-border rounded-lg">
+                    <div className="w-3 h-3 bg-muted rounded-full"></div>
+                    <div>
+                      <span className="text-sm font-medium text-muted-foreground">Behavior Detection</span>
+                      <p className="text-xs text-muted-foreground">Upgrade to Pro to detect fighting, accidents &amp; more</p>
+                    </div>
+                  </div>
+                  <div className="p-3 bg-muted/20 rounded-lg space-y-2">
+                    <div className="h-3 w-2/3 bg-muted/40 rounded animate-pulse"></div>
+                    <div className="h-3 w-1/2 bg-muted/40 rounded animate-pulse"></div>
+                    <div className="h-3 w-3/4 bg-muted/40 rounded animate-pulse"></div>
+                  </div>
+                </div>
+              ) : videoResults && videoResults.behaviors_available && videoResults.behaviors_count > 0 ? (
                 <div className="space-y-3">
                   <div className="flex items-center space-x-3 p-3 bg-orange-500/10 border border-orange-500/20 rounded-lg">
                     <div className="w-3 h-3 bg-orange-500 rounded-full animate-pulse"></div>
@@ -957,7 +1174,7 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
                       <p className="text-xs text-muted-foreground">{videoResults.behaviors_count} behavior event(s) detected</p>
                     </div>
                   </div>
-                  
+
                   {/* Show behavior types */}
                   {videoResults.behaviors_summary?.by_type && Object.keys(videoResults.behaviors_summary.by_type).length > 0 && (
                     <div className="p-3 bg-muted/50 rounded-lg space-y-2">
@@ -973,9 +1190,9 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
                           }
                           const label = behaviorLabels[behaviorType] || behaviorType.charAt(0).toUpperCase() + behaviorType.slice(1).replace('_', ' ')
                           const colorClass = behaviorType === 'fighting' ? 'bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200' :
-                                            behaviorType === 'road_accident' ? 'bg-orange-100 dark:bg-orange-900 text-orange-800 dark:text-orange-200' :
-                                            'bg-yellow-100 dark:bg-yellow-900 text-yellow-800 dark:text-yellow-200'
-                          
+                            behaviorType === 'road_accident' ? 'bg-orange-100 dark:bg-orange-900 text-orange-800 dark:text-orange-200' :
+                              'bg-yellow-100 dark:bg-yellow-900 text-yellow-800 dark:text-yellow-200'
+
                           return (
                             <div key={behaviorType} className="flex items-center justify-between p-2 bg-background rounded border">
                               <div className="flex items-center space-x-2">
@@ -990,7 +1207,7 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
                           )
                         })}
                       </div>
-                      
+
                       {videoResults.behaviors_summary.most_common && (
                         <div className="mt-2 pt-2 border-t">
                           <p className="text-xs text-muted-foreground">
@@ -1005,7 +1222,7 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
                       )}
                     </div>
                   )}
-                  
+
                   {/* Show recent behavior events */}
                   {videoResults.behavior_events && videoResults.behavior_events.length > 0 && (
                     <div className="p-2 bg-muted/30 rounded-lg">
@@ -1021,7 +1238,7 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
                           const label = behaviorLabels[behaviorType] || behaviorType.charAt(0).toUpperCase() + behaviorType.slice(1)
                           const startTime = (event.start_timestamp_ms / 1000).toFixed(1)
                           const endTime = (event.end_timestamp_ms / 1000).toFixed(1)
-                          
+
                           return (
                             <div key={idx} className="text-xs text-muted-foreground flex items-center justify-between">
                               <span>{label}</span>
@@ -1045,56 +1262,22 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
             </div>
           </CardContent>
         </Card>
+        </FeatureGateOverlay>
 
-        {/* Real-Time Alerts Widget */}
-        <Card className="shadow-lg border-3 shadow-gray-500/50 hover:shadow-gray-500/70 transition-shadow duration-300">
-          <CardHeader className="pb-4">
-            <CardTitle className="flex items-center space-x-2 text-xl">
-              <AlertTriangle className="h-5 w-5 text-primary" />
-              <span>Real-Time Alerts</span>
-            </CardTitle>
-            <CardDescription>Live notifications of detected security incidents</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
-              {videoResults && videoResults.detections_count > 0 ? (
-                <div className="space-y-2">
-                  <div className="flex items-center space-x-3 p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
-                    <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse"></div>
-                    <div className="flex-1">
-                      <span className="text-sm font-medium">Security Threat Detected</span>
-                      <p className="text-xs text-muted-foreground">{videoResults.detections_count} objects detected</p>
-                    </div>
-                  </div>
-                  {/* Show specific detection types */}
-                  {videoResults.detections_summary?.by_class && Object.keys(videoResults.detections_summary.by_class).length > 0 && (
-                    <div className="p-2 bg-muted/50 rounded-lg">
-                      <p className="text-xs font-medium mb-1">Detected Objects:</p>
-                      <div className="flex flex-wrap gap-1">
-                        {Object.entries(videoResults.detections_summary.by_class).map(([className, count]) => (
-                          <span 
-                            key={className}
-                            className="text-xs bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200 px-2 py-0.5 rounded font-medium"
-                          >
-                            {className.charAt(0).toUpperCase() + className.slice(1)}: {count as number}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div className="flex items-center space-x-3 p-3 bg-green-500/10 border border-green-500/20 rounded-lg">
-                  <div className="w-3 h-3 bg-green-500 rounded-full"></div>
-                  <div>
-                    <span className="text-sm font-medium">No Active Alerts</span>
-                    <p className="text-xs text-muted-foreground">All systems normal</p>
-                  </div>
-                </div>
-              )}
-            </div>
-          </CardContent>
-        </Card>
+        {/* Real-Time Alerts Widget — Live SSE-powered alerts */}
+        <div className="shadow-lg border-3 shadow-gray-500/50 hover:shadow-gray-500/70 transition-shadow duration-300 rounded-xl">
+          <LiveAlertsPanel
+            alerts={liveAlerts}
+            pendingAlerts={pendingAlerts}
+            stats={alertStats}
+            isConnected={isAlertStreamConnected}
+            connectionError={alertConnectionError}
+            onConnect={connectAlertStream}
+            onConfirm={confirmAlert}
+            onDismiss={dismissAlert}
+            onTestAlert={sendTestAlert}
+          />
+        </div>
       </div>
 
       {/* Key Statistics Section */}
@@ -1111,11 +1294,23 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
             </div>
             <div className="text-center p-4 bg-muted/50 rounded-lg border">
               <div className="text-2xl font-bold text-orange-500">{statistics.activeAlerts}</div>
-              <div className="text-sm text-muted-foreground">Detections</div>
+              <div className="text-sm text-muted-foreground">
+                {isGateUnlocked("behavior_analysis") ? "Detections & Behaviors" : "Detections"}
+              </div>
             </div>
-            <div className="text-center p-4 bg-muted/50 rounded-lg border">
-              <div className="text-2xl font-bold text-red-500">{statistics.mostCommonIncident}</div>
-              <div className="text-sm text-muted-foreground">Threat Level</div>
+            <div className="text-center p-4 bg-muted/50 rounded-lg border relative">
+              {!isGateUnlocked("behavior_analysis") && statistics.mostCommonIncident === "None" ? (
+                <>
+                  <div className="text-2xl font-bold text-muted-foreground/50">—</div>
+                  <div className="text-sm text-muted-foreground">Threat Level</div>
+                  <div className="text-[10px] text-purple-400 mt-1">Pro: full analysis</div>
+                </>
+              ) : (
+                <>
+                  <div className="text-2xl font-bold text-red-500">{statistics.mostCommonIncident}</div>
+                  <div className="text-sm text-muted-foreground">Threat Level</div>
+                </>
+              )}
             </div>
             <div className="text-center p-4 bg-muted/50 rounded-lg border">
               <div className="text-2xl font-bold text-blue-500">{keyframes.length}</div>
@@ -1152,10 +1347,10 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
             >
               <X className="w-4 h-4" />
             </Button>
-            
+
             <h3 className="text-xl font-semibold mb-4">Upload Video</h3>
             <div className="space-y-4">
-              <div 
+              <div
                 className="border-2 border-dashed border-border rounded-lg p-8 text-center cursor-pointer hover:border-primary transition-colors"
                 onClick={() => !processing && !uploading && fileInputRef.current?.click()}
               >
@@ -1189,21 +1384,21 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
                   disabled={processing || uploading}
                 />
               </div>
-              
+
               {!processing && !uploading && selectedFile && (
                 <div className="flex gap-2">
-                  <Button 
-                    variant="outline" 
+                  <Button
+                    variant="outline"
                     onClick={() => {
                       setShowUploadModal(false)
                       setSelectedFile(null)
                       setUploadStatus("")
-                    }} 
+                    }}
                     className="flex-1"
                   >
                     Cancel
                   </Button>
-                  <Button 
+                  <Button
                     onClick={() => selectedFile && handleFileUpload(selectedFile)}
                     className="bg-primary hover:bg-primary/90 text-primary-foreground flex-1"
                   >
@@ -1211,7 +1406,7 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
                   </Button>
                 </div>
               )}
-              
+
               {/* Manual refresh button if stuck */}
               {processing && currentVideoId && (
                 <div className="mt-4 space-y-2">
@@ -1224,29 +1419,29 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
                         const statusResponse = await fetch(`/api/video/status/${currentVideoId}`)
                         const statusData = await statusResponse.json()
                         console.log('Manual status check:', statusData)
-                        
+
                         // Check for completion - multiple ways
-                        const isCompleted = 
-                          statusData.status === 'completed' || 
+                        const isCompleted =
+                          statusData.status === 'completed' ||
                           statusData.meta_data?.processing_status === 'completed' ||
                           (statusData.processing_progress === 100) ||
                           (statusData.meta_data?.processing_progress === 100)
-                        
+
                         if (isCompleted) {
                           // Clear polling
                           if (pollIntervalRef.current) {
                             clearInterval(pollIntervalRef.current)
                             pollIntervalRef.current = null
                           }
-                          
+
                           // Clear processing state FIRST to remove blur
                           setProcessing(false)
                           setUploading(false)
                           setUploadStatus("✅ Processing complete!")
-                          
+
                           // Fetch results
                           await fetchVideoResults(currentVideoId)
-                          
+
                           // Close modal
                           setTimeout(() => {
                             setShowUploadModal(false)
@@ -1263,7 +1458,7 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
                   >
                     🔄 Check Status Manually
                   </Button>
-                  
+
                   <Button
                     variant="ghost"
                     size="sm"
@@ -1310,7 +1505,7 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
                 <X className="w-4 h-4" />
               </Button>
             </div>
-            
+
             <div className="space-y-6">
               {/* Summary Section */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -1338,21 +1533,20 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
                   <h4 className="text-lg font-semibold mb-3">Key Frames with Detections</h4>
                   <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
                     {keyframes.map((keyframe, idx) => (
-                      <div 
-                        key={idx} 
-                        className={`border rounded-lg overflow-hidden ${
-                          keyframe.has_detections ? 'border-red-500 border-2 shadow-lg' : ''
-                        }`}
+                      <div
+                        key={idx}
+                        className={`border rounded-lg overflow-hidden ${keyframe.has_detections ? 'border-red-500 border-2 shadow-lg' : ''
+                          }`}
                       >
                         <div className="relative">
-                          <img 
+                          <img
                             src={
-                              (keyframe.has_detections && keyframe.annotated_url) 
+                              (keyframe.has_detections && keyframe.annotated_url)
                                 ? (keyframe.annotated_url.startsWith('http') || keyframe.annotated_url.startsWith('/api/'))
                                   ? keyframe.annotated_url
                                   : `/api/video/${currentVideoId}/keyframe/${keyframe.annotated_url.split('/').pop() || keyframe.filename}`
                                 : keyframe.api_url || keyframe.minio_url || keyframe.url || keyframe.presigned_url || '/placeholder.jpg'
-                            } 
+                            }
                             alt={`Keyframe ${idx + 1}`}
                             className="w-full h-32 object-cover"
                             onError={(e) => {
@@ -1366,12 +1560,11 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
                             }}
                           />
                           {keyframe.has_detections && (
-                            <div className={`absolute top-2 right-2 text-white text-xs px-2 py-1 rounded font-bold ${
-                              keyframe.has_faces 
-                                ? 'bg-blue-600' 
-                                : 'bg-red-600'
-                            }`}>
-                              {keyframe.has_faces && keyframe.face_count 
+                            <div className={`absolute top-2 right-2 text-white text-xs px-2 py-1 rounded font-bold ${keyframe.has_faces
+                              ? 'bg-blue-600'
+                              : 'bg-red-600'
+                              }`}>
+                              {keyframe.has_faces && keyframe.face_count
                                 ? `${keyframe.face_count} Face${keyframe.face_count !== 1 ? 's' : ''}`
                                 : `${keyframe.detection_count || 0} Detection${keyframe.detection_count !== 1 ? 's' : ''}`
                               }
@@ -1390,13 +1583,12 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
                                     // Highlight "Face Detected" with different styling
                                     const isFace = obj.toLowerCase().includes('face')
                                     return (
-                                      <span 
+                                      <span
                                         key={objIdx}
-                                        className={`text-xs px-2 py-0.5 rounded font-medium ${
-                                          isFace 
-                                            ? 'bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 border border-blue-300 dark:border-blue-700' 
-                                            : 'bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200'
-                                        }`}
+                                        className={`text-xs px-2 py-0.5 rounded font-medium ${isFace
+                                          ? 'bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 border border-blue-300 dark:border-blue-700'
+                                          : 'bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200'
+                                          }`}
                                       >
                                         {obj}
                                         {isFace && keyframe.face_count && keyframe.face_count > 1 && (
@@ -1429,7 +1621,7 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
                     {detectedFaces.map((face, idx) => (
                       <div key={idx} className="border rounded-lg overflow-hidden">
                         {face.face_image_path ? (
-                          <img 
+                          <img
                             src={`/api/face-image/${face.face_id}`}
                             alt={`Face ${idx + 1}`}
                             className="w-full h-32 object-cover"
@@ -1463,14 +1655,14 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
               )}
 
               <div className="flex gap-2 pt-4">
-                <Button 
-                  variant="outline" 
+                <Button
+                  variant="outline"
                   onClick={() => setShowReportModal(false)}
                   className="flex-1"
                 >
                   Close
                 </Button>
-                <Button 
+                <Button
                   onClick={() => currentVideoId && handleViewResults(currentVideoId)}
                   className="bg-primary hover:bg-primary/90 text-primary-foreground flex-1"
                 >
@@ -1480,6 +1672,27 @@ export function UserDashboard({ userRole }: UserDashboardProps) {
             </div>
           </Card>
         </div>
+      )}
+
+      {/* Real-Time Alert Popup Modal — shown for each pending alert requiring confirmation */}
+      {currentPopupAlert && (
+        <AlertPopup
+          alert={currentPopupAlert}
+          onConfirm={confirmAlert}
+          onDismiss={dismissAlert}
+          onSkip={dismissPopup}
+          pendingCount={pendingAlerts.length}
+        />
+      )}
+
+      {/* Upgrade Dialog — shown when user clicks a gated action (upload, live, search) */}
+      {showUpgradePrompt && DASHBOARD_GATES[upgradeGateId] && (
+        <UpgradeDialog
+          open={showUpgradePrompt}
+          onClose={() => setShowUpgradePrompt(false)}
+          gate={DASHBOARD_GATES[upgradeGateId]}
+          currentPlan={planId}
+        />
       )}
     </div>
   )

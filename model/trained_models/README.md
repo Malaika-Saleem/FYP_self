@@ -1,6 +1,6 @@
 # DetectifAI Model
 
-Accuracy: 99.23%
+Accuracy: 99.35%
 Classifier: svm
 Classes: 30
 

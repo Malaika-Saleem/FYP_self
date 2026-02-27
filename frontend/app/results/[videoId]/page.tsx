@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
+import { useAuth } from "@/components/auth-provider"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { ArrowLeft, Download, Play, Pause, Volume2, VolumeX, Maximize, SkipForward, SkipBack } from 'lucide-react'
@@ -51,6 +52,7 @@ interface ProcessingSummary {
 }
 
 export default function VideoResults({ params }: { params: { videoId: string } }) {
+  const { user, isLoading: authLoading } = useAuth()
   const router = useRouter()
   const [results, setResults] = useState<VideoResults | null>(null)
   const [keyframes, setKeyframes] = useState<Keyframe[]>([])
@@ -71,9 +73,18 @@ export default function VideoResults({ params }: { params: { videoId: string } }
   const [videoError, setVideoError] = useState<string | null>(null)
   const [isVideoLoading, setIsVideoLoading] = useState(true)
 
+  // Auth guard — redirect to signin if not logged in
   useEffect(() => {
-    fetchVideoResults()
-  }, [params.videoId])
+    if (!authLoading && !user) {
+      router.push("/signin")
+    }
+  }, [user, authLoading, router])
+
+  useEffect(() => {
+    if (user) {
+      fetchVideoResults()
+    }
+  }, [params.videoId, user])
 
   // Video player controls
   const togglePlay = () => {
@@ -196,7 +207,7 @@ export default function VideoResults({ params }: { params: { videoId: string } }
     }
   }
 
-  if (loading) {
+  if (authLoading || loading) {
     return (
       <div className="min-h-screen bg-gray-50 dark:bg-gray-900 p-6">
         <div className="max-w-7xl mx-auto">
